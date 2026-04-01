@@ -1,0 +1,2649 @@
+import {
+  Alert,
+  Animated,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { API_BASE_URL } from '@/constants/api';
+import * as FileSystem from 'expo-file-system/legacy';
+
+export default function HomeScreen() {
+  const params = useLocalSearchParams<{ email?: string }>();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const apiBaseUrl = useMemo(() => API_BASE_URL, []);
+  const userEmail = params.email ? String(params.email) : '';
+  const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+  const [isManualOpen, setIsManualOpen] = useState(false);
+  const [isScanOpen, setIsScanOpen] = useState(false);
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [entryType, setEntryType] = useState<'expense' | 'income'>('expense');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [category, setCategory] = useState('');
+  const [categorySelected, setCategorySelected] = useState(false);
+  const [scanImageUri, setScanImageUri] = useState<string | null>(null);
+  const [scanImageName, setScanImageName] = useState('');
+  const [scanImageBase64, setScanImageBase64] = useState<string | null>(null);
+  const [scanImageMimeType, setScanImageMimeType] = useState<string | null>(null);
+  const [scanQrText, setScanQrText] = useState('');
+  const [scanQrLoading, setScanQrLoading] = useState(false);
+  const [scanQrError, setScanQrError] = useState('');
+  const [scanQrInfo, setScanQrInfo] = useState<any | null>(null);
+  const [scanNote, setScanNote] = useState('');
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [isSavingTx, setIsSavingTx] = useState(false);
+  const [activeTab, setActiveTab] = useState<'home' | 'transactions' | 'community' | 'treasure'>(
+    'home'
+  );
+  const [txItems, setTxItems] = useState<any[]>([]);
+  const [txFilter, setTxFilter] = useState<'all' | 'expense' | 'income'>('all');
+  const [txLoading, setTxLoading] = useState(false);
+  const [txError, setTxError] = useState('');
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
+  const itemAnim1 = useRef(new Animated.Value(0)).current;
+  const itemAnim2 = useRef(new Animated.Value(0)).current;
+  const itemAnim3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!isQuickAddOpen) {
+      itemAnim1.setValue(0);
+      itemAnim2.setValue(0);
+      itemAnim3.setValue(0);
+      return;
+    }
+
+    Animated.stagger(80, [
+      Animated.timing(itemAnim1, {
+        toValue: 1,
+        duration: 260,
+        useNativeDriver: true,
+      }),
+      Animated.timing(itemAnim2, {
+        toValue: 1,
+        duration: 260,
+        useNativeDriver: true,
+      }),
+      Animated.timing(itemAnim3, {
+        toValue: 1,
+        duration: 260,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [isQuickAddOpen, itemAnim1, itemAnim2, itemAnim3]);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setIsKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setIsKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const handlePickImage = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Cần quyền truy cập', 'Vui lòng cấp quyền để chọn ảnh hóa đơn.');
+      return;
+    }
+
+    let result;
+    try {
+      result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+        base64: true,
+      });
+    } catch (error) {
+      // Fallback for Expo Go / native mismatch
+      result = await ImagePicker.launchImageLibraryAsync();
+    }
+
+    if (result.canceled || !result.assets?.length) return;
+
+    const asset = result.assets[0];
+    setScanImageUri(asset.uri);
+    setScanImageName(asset.fileName ?? 'Ảnh đã chọn');
+
+    let base64: string | null = asset.base64 ?? null;
+    try {
+      const manipulated = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [{ resize: { width: 900 } }],
+        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      base64 = manipulated.base64 ?? base64;
+      setScanImageMimeType('image/jpeg');
+    } catch (error) {
+      setScanImageMimeType(asset.mimeType ?? guessImageMime(asset.uri));
+    }
+
+    if (!base64 && asset.uri) {
+      try {
+        base64 = await readImageAsBase64(asset.uri);
+      } catch (error) {
+        base64 = null;
+      }
+    }
+    setScanImageBase64(base64);
+    if (base64) {
+      await decodeQrPreview(base64);
+    } else {
+      setScanQrError('Không đọc được ảnh để quét QR.');
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Không hỗ trợ trên web', 'Vui lòng dùng thiết bị di động để chụp ảnh.');
+      return;
+    }
+
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Cần quyền truy cập', 'Vui lòng cấp quyền để mở camera.');
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.9,
+      base64: true,
+    });
+
+    if (result.canceled || !result.assets?.length) return;
+
+    const asset = result.assets[0];
+    setScanImageName(asset.fileName ?? 'Ảnh đã chụp');
+
+    let base64: string | null = asset.base64 ?? null;
+    let finalUri = asset.uri;
+    let finalMime = asset.mimeType ?? guessImageMime(asset.uri);
+    try {
+      const manipulated = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [{ resize: { width: 1000 } }],
+        { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      base64 = manipulated.base64 ?? base64;
+      finalUri = manipulated.uri;
+      finalMime = 'image/jpeg';
+    } catch (error) {
+      // keep original uri/mime
+    }
+
+    if (!base64 && finalUri) {
+      try {
+        base64 = await readImageAsBase64(finalUri);
+      } catch (error) {
+        base64 = null;
+      }
+    }
+    setScanImageUri(finalUri);
+    setScanImageMimeType(finalMime);
+    setScanImageBase64(base64);
+    if (base64) {
+      await decodeQrPreview(base64);
+    } else {
+      setScanQrError('Không đọc được ảnh để quét QR.');
+    }
+  };
+
+  const decodeQrPreview = async (base64: string) => {
+    try {
+      setScanQrLoading(true);
+      setScanQrError('');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      const response = await fetch(`${apiBaseUrl}/api/qr/decode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: base64 }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      const data = await response.json();
+      if (!response.ok) {
+        setScanQrError(data?.message ?? 'Không thể quét QR.');
+        setScanQrText('');
+        setScanQrInfo(null);
+        return;
+      }
+      const nextText = typeof data?.qrText === 'string' ? data.qrText : '';
+      if (!nextText.trim()) {
+        setScanQrError('Không tìm thấy QR trong ảnh.');
+      }
+      setScanQrText(nextText);
+      setScanQrInfo(data?.parsed ?? null);
+    } catch (error) {
+      setScanQrError('Không thể quét QR (timeout hoặc lỗi mạng).');
+      setScanQrText('');
+      setScanQrInfo(null);
+    } finally {
+      setScanQrLoading(false);
+    }
+  };
+
+  const mapCategoryForApi = (key: string, type: 'expense' | 'income') => {
+    if (type === 'income') {
+      if (key === 'salary') return 'lương';
+      if (key === 'bonus') return 'thưởng';
+      if (key === 'invest') return 'đầu tư';
+      return 'khác';
+    }
+
+    switch (key) {
+      case 'food':
+        return 'ăn uống';
+      case 'move':
+        return 'di chuyển';
+      case 'shop':
+        return 'mua sắm';
+      case 'fun':
+        return 'giải trí';
+      case 'bill':
+        return 'hóa đơn';
+      case 'health':
+        return 'sức khỏe';
+      case 'edu':
+        return 'giáo dục';
+      default:
+        return 'khác';
+    }
+  };
+
+
+  const readImageAsBase64 = async (uri: string) => {
+    try {
+      return await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+    } catch (error) {
+      const safeName = `image-${Date.now()}.jpg`;
+      const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (!baseDir) {
+        throw error;
+      }
+      const target = `${baseDir}${safeName}`;
+      await FileSystem.copyAsync({ from: uri, to: target });
+      return await FileSystem.readAsStringAsync(target, { encoding: 'base64' });
+    }
+  };
+
+  const guessImageMime = (uri?: string) => {
+    if (!uri) return 'image/jpeg';
+    const lower = uri.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.heic')) return 'image/heic';
+    return 'image/jpeg';
+  };
+
+  const formatAmount = (value: number) => {
+    const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0;
+    try {
+      return `${new Intl.NumberFormat('vi-VN').format(safeValue)} đ`;
+    } catch (error) {
+      return `${safeValue} đ`;
+    }
+  };
+
+  const formatAmountInput = (value: string) => {
+    const digits = value.replace(/[^\d]/g, '');
+    if (!digits) return '';
+    try {
+      return new Intl.NumberFormat('vi-VN').format(Number(digits));
+    } catch (error) {
+      return digits;
+    }
+  };
+
+  const formatDateTime = (value?: string) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    const dd = String(date.getDate()).padStart(2, '0');
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    return `${dd}/${mm} ${hh}:${min}`;
+  };
+
+  const loadTransactions = async () => {
+    if (!userEmail) {
+      setTxError('Thiếu email người dùng.');
+      return;
+    }
+    try {
+      setTxLoading(true);
+      setTxError('');
+      const response = await fetch(
+        `${apiBaseUrl}/api/transactions?email=${encodeURIComponent(userEmail)}`
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        setTxError(data?.message ?? 'Không thể tải giao dịch.');
+        setTxItems([]);
+        return;
+      }
+      setTxItems(Array.isArray(data?.items) ? data.items : []);
+    } catch (error) {
+      setTxError('Không kết nối được máy chủ.');
+      setTxItems([]);
+    } finally {
+      setTxLoading(false);
+    }
+  };
+
+  const deleteTransaction = async (id: number) => {
+    if (!userEmail) {
+      Alert.alert('Thiếu email', 'Vui lòng đăng nhập lại để xóa giao dịch.');
+      return;
+    }
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/api/transactions/${id}?email=${encodeURIComponent(userEmail)}`,
+        { method: 'DELETE' }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        Alert.alert('Lỗi', data?.message ?? 'Không thể xóa giao dịch.');
+        return;
+      }
+      loadTransactions();
+    } catch (error) {
+      Alert.alert('Lỗi', 'Không kết nối được máy chủ.');
+    }
+  };
+
+  const confirmDelete = (item: any) => {
+    if (!item?.id) return;
+    setDeleteTarget(item);
+    setIsDeleteOpen(true);
+  };
+
+  const saveTransaction = async (payload: Record<string, any>) => {
+    if (!userEmail) {
+      Alert.alert('Thiếu email', 'Vui lòng đăng nhập lại để lưu giao dịch.');
+      return null;
+    }
+    if (isSavingTx) return false;
+
+    try {
+      setIsSavingTx(true);
+      const response = await fetch(`${apiBaseUrl}/api/transactions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: userEmail, ...payload }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        Alert.alert('Lỗi', data?.message ?? 'Không thể lưu giao dịch.');
+        return null;
+      }
+      return data;
+    } catch (error) {
+      Alert.alert('Lỗi', 'Không kết nối được máy chủ.');
+      return null;
+    } finally {
+      setIsSavingTx(false);
+    }
+  };
+
+  const filteredTransactions = useMemo(() => {
+    if (txFilter === 'all') return txItems;
+    return txItems.filter((item) => item?.type === txFilter);
+  }, [txFilter, txItems]);
+
+  useEffect(() => {
+    if (activeTab === 'transactions') {
+      loadTransactions();
+    }
+  }, [activeTab, userEmail, apiBaseUrl]);
+
+  const handleSaveManual = async () => {
+    const mappedCategory = categorySelected ? mapCategoryForApi(category, entryType) : '';
+    const ok = await saveTransaction({
+      type: entryType,
+      amount: Number.isFinite(Number(amount)) ? Number(amount) : 0,
+      description: note,
+      category: mappedCategory,
+      source: 'manual',
+    });
+    if (!ok) return;
+    setIsManualOpen(false);
+    setAmount('');
+    setNote('');
+    setCategory('');
+    setCategorySelected(false);
+    if (activeTab === 'transactions') {
+      loadTransactions();
+    }
+  };
+
+  const handleSaveScan = async (source: 'scan' | 'upload') => {
+    if (!scanImageBase64 || !scanImageMimeType) {
+      Alert.alert('Thiếu ảnh', 'Vui lòng chọn hoặc chụp ảnh hóa đơn.');
+      return;
+    }
+    const amountFromQr = scanQrInfo?.amount ? Number(scanQrInfo.amount) : 0;
+    const result = await saveTransaction({
+      type: 'expense',
+      amount: Number.isFinite(amountFromQr) ? amountFromQr : 0,
+      description: scanNote,
+      category: '',
+      source,
+      rawText: scanNote,
+      imageBase64: scanImageBase64,
+      imageMimeType: scanImageMimeType,
+      attachmentUrl: scanImageUri ?? '',
+    });
+    if (!result) return;
+    if (typeof result?.qrText === 'string' && result.qrText.trim()) {
+      setScanQrText(result.qrText);
+      setScanQrInfo(result?.parsed ?? scanQrInfo ?? null);
+    } else {
+      setScanQrText('');
+      setScanQrInfo(null);
+    }
+    setScanImageUri(null);
+    setScanImageName('');
+    setScanImageBase64(null);
+    setScanImageMimeType(null);
+    setScanNote('');
+    setScanQrInfo(null);
+    if (source === 'scan') setIsScanOpen(false);
+    if (source === 'upload') setIsUploadOpen(false);
+    if (activeTab === 'transactions') {
+      loadTransactions();
+    }
+  };
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <View
+        style={[
+          styles.header,
+          { paddingTop: (Platform.OS === 'web' ? 20 : 12) + insets.top },
+        ]}>
+        <View style={styles.headerLeft}>
+          <View style={styles.avatar}>
+            <MaterialCommunityIcons name="robot-excited" size={22} color="#0EA5E9" />
+          </View>
+          <View>
+            <Text style={styles.appName}>Monee</Text>
+            <Text style={styles.appSubtitle}>Trợ lý tài chính Gen Z</Text>
+          </View>
+        </View>
+        <View style={styles.headerRight}>
+          <View style={styles.pointsPill}>
+            <MaterialCommunityIcons name="star-four-points" size={16} color="#FBBF24" />
+            <Text style={styles.pointsText}>1250 điểm</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.settingsButton}
+            onPress={() => {
+              const email = params.email ? String(params.email) : '';
+              router.push(email ? `/onboarding-summary?email=${encodeURIComponent(email)}` : '/onboarding-summary');
+            }}
+            activeOpacity={0.7}>
+            <Ionicons name="settings-outline" size={18} color="#0F172A" />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        {activeTab === 'home' && (
+          <>
+            <View style={styles.scoreCard}>
+              <View style={styles.scoreHeader}>
+                <View>
+                  <Text style={styles.scoreLabel}>FinScore của bạn</Text>
+                  <View style={styles.scoreRow}>
+                    <Text style={styles.scoreValue}>78</Text>
+                    <Text style={styles.scoreMax}>/100</Text>
+                  </View>
+                  <Text style={styles.scoreStatus}>Tốt</Text>
+                </View>
+                <View style={styles.scoreIcon}>
+                  <Ionicons name="pulse" size={26} color="#F8FAFC" />
+                </View>
+              </View>
+
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: '78%' }]} />
+              </View>
+
+              <View style={styles.tipRow}>
+                <MaterialCommunityIcons name="lightbulb-on-outline" size={16} color="#FBBF24" />
+                <Text style={styles.tipText}>Tiếp tục tiết kiệm để tăng điểm!</Text>
+              </View>
+            </View>
+
+            <View style={styles.chartCard}>
+              <View style={styles.chartHeader}>
+                <View>
+                  <Text style={styles.chartTitle}>Xu hướng tài chính 30 ngày</Text>
+                  <Text style={styles.chartSubtitle}>Chi tiêu, Thu nhập & Ngân sách</Text>
+                </View>
+                <TouchableOpacity style={styles.chartButton}>
+                  <Ionicons name="trending-up" size={16} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.chartArea}>
+                <Text style={styles.chartPlaceholder}>Biểu đồ sẽ hiển thị ở đây</Text>
+              </View>
+
+              <View style={styles.legendRow}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#F97316' }]} />
+                  <Text style={styles.legendText}>Chi tiêu</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#0EA5E9' }]} />
+                  <Text style={styles.legendText}>Ngân sách</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#22C55E' }]} />
+                  <Text style={styles.legendText}>Thu nhập</Text>
+                </View>
+              </View>
+            </View>
+          </>
+        )}
+
+        {activeTab === 'transactions' && (
+          <View style={styles.txSection}>
+            <View style={styles.txHeaderRow}>
+              <View>
+                <Text style={styles.txTitle}>Chi tiêu & Thu nhập</Text>
+                <Text style={styles.txSubtitle}>Danh sách giao dịch bạn đã nhập</Text>
+              </View>
+              <TouchableOpacity style={styles.txRefresh} onPress={loadTransactions}>
+                <Ionicons name="refresh" size={18} color="#0EA5E9" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.txFilterRow}>
+              {[
+                { key: 'all', label: 'Tất cả' },
+                { key: 'expense', label: 'Chi tiêu' },
+                { key: 'income', label: 'Thu nhập' },
+              ].map((item) => {
+                const active = txFilter === item.key;
+                return (
+                  <TouchableOpacity
+                    key={item.key}
+                    style={[styles.txFilter, active && styles.txFilterActive]}
+                    onPress={() => setTxFilter(item.key as 'all' | 'expense' | 'income')}>
+                    <Text style={[styles.txFilterText, active && styles.txFilterTextActive]}>
+                      {item.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={styles.txCard}>
+              {txLoading && <Text style={styles.txStatus}>Đang tải giao dịch...</Text>}
+              {!!txError && !txLoading && <Text style={styles.txError}>{txError}</Text>}
+              {!txLoading && !txError && filteredTransactions.length === 0 && (
+                <Text style={styles.txStatus}>Chưa có giao dịch nào.</Text>
+              )}
+              {!txLoading &&
+                !txError &&
+                filteredTransactions.map((item, index) => {
+                  const categoryLabel =
+                    item.category ||
+                    item.ai_category ||
+                    (item.type === 'income' ? 'Thu nhập' : 'Khác');
+                  const noteText =
+                    (item.description && String(item.description).trim()) || '';
+                  const isIncome = item.type === 'income';
+                  return (
+                    <Pressable
+                      key={item.id ?? `${item.type}-${index}`}
+                      onLongPress={() => confirmDelete(item)}
+                      style={[styles.txItem, index === filteredTransactions.length - 1 && styles.txItemLast]}>
+                      <View style={[styles.txBadge, isIncome ? styles.txBadgeIncome : styles.txBadgeExpense]}>
+                        <Ionicons
+                          name={isIncome ? 'arrow-up' : 'arrow-down'}
+                          size={14}
+                          color="#FFFFFF"
+                        />
+                      </View>
+                      <View style={styles.txInfo}>
+                        <Text style={styles.txLabel} numberOfLines={1}>
+                          {categoryLabel}
+                        </Text>
+                        <Text style={styles.txMeta} numberOfLines={1}>
+                          {noteText
+                            ? `${noteText} • ${formatDateTime(item.occurred_at)}`
+                            : `${isIncome ? 'Thu nhập' : 'Chi tiêu'} • ${formatDateTime(
+                                item.occurred_at
+                              )}`}
+                        </Text>
+                      </View>
+                      <Text style={[styles.txAmount, isIncome ? styles.txAmountIncome : styles.txAmountExpense]}>
+                        {isIncome ? '+' : '-'}
+                        {formatAmount(Number(item.amount))}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+            </View>
+          </View>
+        )}
+
+        {activeTab === 'community' && (
+          <View style={styles.txSection}>
+            <View style={styles.placeholderCard}>
+              <Ionicons name="people" size={28} color="#0EA5E9" />
+              <Text style={styles.placeholderTitle}>Cộng đồng</Text>
+              <Text style={styles.placeholderText}>Tính năng này sẽ cập nhật sau.</Text>
+            </View>
+          </View>
+        )}
+
+        {activeTab === 'treasure' && (
+          <View style={styles.txSection}>
+            <View style={styles.placeholderCard}>
+              <Ionicons name="trophy" size={28} color="#0EA5E9" />
+              <Text style={styles.placeholderTitle}>Kho báu</Text>
+              <Text style={styles.placeholderText}>Tính năng này sẽ cập nhật sau.</Text>
+            </View>
+          </View>
+        )}
+      </ScrollView>
+
+      {isQuickAddOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsQuickAddOpen(false)} />
+          <View style={styles.quickAddStack}>
+            <Animated.View
+              style={[
+                styles.quickAddItem,
+                styles.quickAddAnim,
+                {
+                  transform: [
+                    {
+                      translateY: itemAnim1.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [18, 0],
+                      }),
+                    },
+                  ],
+                  opacity: itemAnim1,
+                },
+              ]}>
+              <TouchableOpacity
+                style={styles.quickAddItemInner}
+                activeOpacity={0.85}
+                onPress={() => {
+                  setIsQuickAddOpen(false);
+                  setIsManualOpen(true);
+                }}>
+                <View style={[styles.quickAddIcon, { backgroundColor: '#00B7C8' }]}>
+                  <MaterialCommunityIcons name="pencil-outline" size={22} color="#FFFFFF" />
+                </View>
+                <View style={styles.quickAddTextBlock}>
+                  <Text style={styles.quickAddTitle}>Nhập chi tiêu thủ công</Text>
+                  <Text style={styles.quickAddSubtitle}>Tự nhập số tiền và danh mục</Text>
+                </View>
+                <MaterialCommunityIcons name="star-four-points" size={16} color="#0EA5E9" />
+              </TouchableOpacity>
+            </Animated.View>
+
+            <Animated.View
+              style={[
+                styles.quickAddItem,
+                styles.quickAddAnim,
+                {
+                  transform: [
+                    {
+                      translateY: itemAnim2.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [18, 0],
+                      }),
+                    },
+                  ],
+                  opacity: itemAnim2,
+                },
+              ]}>
+              <TouchableOpacity
+                style={styles.quickAddItemInner}
+                activeOpacity={0.85}
+                onPress={() => {
+                  setIsQuickAddOpen(false);
+                  setIsScanOpen(true);
+                }}>
+                <View style={[styles.quickAddIcon, { backgroundColor: '#F97316' }]}>
+                  <MaterialCommunityIcons name="qrcode-scan" size={22} color="#FFFFFF" />
+                </View>
+                <View style={styles.quickAddTextBlock}>
+                  <Text style={styles.quickAddTitle}>Quét mã QR / hóa đơn</Text>
+                  <Text style={styles.quickAddSubtitle}>Bật camera để quét nhanh</Text>
+                </View>
+                <MaterialCommunityIcons name="star-four-points" size={16} color="#F97316" />
+              </TouchableOpacity>
+            </Animated.View>
+
+            <Animated.View
+              style={[
+                styles.quickAddItem,
+                styles.quickAddAnim,
+                {
+                  transform: [
+                    {
+                      translateY: itemAnim3.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [18, 0],
+                      }),
+                    },
+                  ],
+                  opacity: itemAnim3,
+                },
+              ]}>
+              <TouchableOpacity
+                style={styles.quickAddItemInner}
+                activeOpacity={0.85}
+                onPress={() => {
+                  setIsQuickAddOpen(false);
+                  setIsUploadOpen(true);
+                }}>
+                <View style={[styles.quickAddIcon, { backgroundColor: '#8B5CF6' }]}>
+                  <MaterialCommunityIcons name="image-outline" size={22} color="#FFFFFF" />
+                </View>
+                <View style={styles.quickAddTextBlock}>
+                  <Text style={styles.quickAddTitle}>Tải ảnh hóa đơn từ thư viện</Text>
+                  <Text style={styles.quickAddSubtitle}>Chọn ảnh có sẵn để quét</Text>
+                </View>
+                <MaterialCommunityIcons name="star-four-points" size={16} color="#8B5CF6" />
+              </TouchableOpacity>
+            </Animated.View>
+
+          </View>
+        </View>
+      )}
+
+      {isManualOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => {
+              setIsManualOpen(false);
+              setCategory('');
+              setCategorySelected(false);
+            }}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+            style={styles.manualModalWrapper}>
+            <View style={styles.manualModal}>
+              <View style={styles.manualHeader}>
+                <View style={styles.manualTitleRow}>
+                  <View style={styles.manualSpark}>
+                    <MaterialCommunityIcons name="star-four-points" size={16} color="#0EA5E9" />
+                  </View>
+                  <Text style={styles.manualTitle}>Nhập chi tiêu thủ công</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.closeButton}
+                  onPress={() => {
+                    setIsManualOpen(false);
+                    setCategory('');
+                    setCategorySelected(false);
+                  }}>
+                  <Ionicons name="close" size={22} color="#94A3B8" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.segmented}>
+                <TouchableOpacity
+                  style={[
+                    styles.segmentButton,
+                    entryType === 'expense' && styles.segmentActive,
+                  ]}
+                  onPress={() => {
+                    setEntryType('expense');
+                    setCategory('');
+                    setCategorySelected(false);
+                  }}>
+                  <Ionicons
+                    name="trending-down"
+                    size={16}
+                    color={entryType === 'expense' ? '#0F172A' : '#64748B'}
+                  />
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      entryType === 'expense' && styles.segmentTextActive,
+                    ]}>
+                    Chi tiêu
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.segmentButton,
+                    entryType === 'income' && styles.segmentActive,
+                  ]}
+                  onPress={() => {
+                    setEntryType('income');
+                    setCategory('');
+                    setCategorySelected(false);
+                  }}>
+                  <Ionicons
+                    name="trending-up"
+                    size={16}
+                    color={entryType === 'income' ? '#0F172A' : '#64748B'}
+                  />
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      entryType === 'income' && styles.segmentTextActive,
+                    ]}>
+                    Thu nhập
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                contentContainerStyle={[
+                  styles.manualBody,
+                  { paddingBottom: 24 + insets.bottom },
+                ]}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled">
+                <Text style={styles.fieldLabel}>Số tiền (VND)</Text>
+                <TextInput
+                  style={styles.fieldInput}
+                  placeholder="0"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="numeric"
+                  value={formatAmountInput(amount)}
+                  onChangeText={(text) => {
+                    const digits = text.replace(/[^\d]/g, '');
+                    setAmount(digits);
+                  }}
+                />
+
+                <Text style={styles.fieldLabel}>Mô tả</Text>
+                <TextInput
+                  style={styles.fieldInput}
+                  placeholder="Ví dụ: Cà phê buổi sáng"
+                  placeholderTextColor="#94A3B8"
+                  value={note}
+                  onChangeText={setNote}
+                />
+
+                <View style={styles.aiHint}>
+                  <MaterialCommunityIcons name="star-four-points" size={14} color="#0EA5E9" />
+                  <Text style={styles.aiHintText}>
+                    AI đang phân tích... Vui lòng chọn danh mục thủ công
+                  </Text>
+                </View>
+
+                <Text style={styles.fieldLabel}>Danh mục</Text>
+                <View style={styles.categoryGrid}>
+                  {(entryType === 'income'
+                    ? [
+                        { key: 'salary', label: 'Lương', icon: 'cash' },
+                        { key: 'bonus', label: 'Thưởng', icon: 'gift' },
+                        { key: 'invest', label: 'Đầu tư', icon: 'chart-line' },
+                        { key: 'other', label: 'Khác', icon: 'cash-multiple' },
+                      ]
+                    : [
+                        { key: 'food', label: 'Ăn uống', icon: 'food' },
+                        { key: 'move', label: 'Di chuyển', icon: 'train-car' },
+                        { key: 'shop', label: 'Mua sắm', icon: 'shopping' },
+                        { key: 'fun', label: 'Giải trí', icon: 'gamepad-variant' },
+                        { key: 'bill', label: 'Hóa đơn', icon: 'receipt' },
+                        { key: 'health', label: 'Sức khỏe', icon: 'heart-pulse' },
+                        { key: 'edu', label: 'Giáo dục', icon: 'school' },
+                        { key: 'other', label: 'Khác', icon: 'cube' },
+                      ]
+                  ).map((item) => {
+                      const active = categorySelected && category === item.key;
+                    return (
+                      <TouchableOpacity
+                        key={item.key}
+                        style={[styles.categoryCard, active && styles.categoryCardActive]}
+                        onPress={() => {
+                          setCategory(item.key);
+                          setCategorySelected(true);
+                        }}>
+                        <View
+                          style={[
+                            styles.categoryIcon,
+                            active && styles.categoryIconActive,
+                          ]}>
+                          <MaterialCommunityIcons
+                            name={item.icon as never}
+                            size={20}
+                            color={active ? '#FFFFFF' : '#0EA5E9'}
+                          />
+                        </View>
+                        <Text
+                          style={[
+                            styles.categoryLabel,
+                            active && styles.categoryLabelActive,
+                          ]}>
+                          {item.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.manualActions}>
+                  <TouchableOpacity
+                    style={styles.manualCancel}
+                    onPress={() => {
+                      setIsManualOpen(false);
+                      setCategory('');
+                      setCategorySelected(false);
+                    }}>
+                    <Text style={styles.manualCancelText}>Hủy</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.manualSave} onPress={handleSaveManual}>
+                    <Text style={styles.manualSaveText}>Lưu</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      )}
+
+       {isScanOpen && (
+         <View style={styles.overlay} pointerEvents="box-none">
+           <Pressable
+             style={styles.modalBackdrop}
+             onPress={() => {
+               setIsScanOpen(false);
+               setScanQrText('');
+               setScanQrError('');
+               setScanNote('');
+               setScanQrInfo(null);
+             }}
+           />
+           <KeyboardAvoidingView
+             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+             style={styles.scanModalWrapper}>
+             <View style={styles.scanModal}>
+               <ScrollView
+                 contentContainerStyle={[
+                   styles.scanBody,
+                   { paddingBottom: 24 + insets.bottom },
+                 ]}
+                 showsVerticalScrollIndicator={false}
+                 keyboardShouldPersistTaps="handled">
+              <View style={styles.scanHeader}>
+                <Text style={styles.scanTitle}>Quét hóa đơn</Text>
+                 <TouchableOpacity
+                   style={styles.closeButton}
+                   onPress={() => {
+                     setIsScanOpen(false);
+                     setScanQrText('');
+                     setScanQrError('');
+                     setScanNote('');
+                     setScanQrInfo(null);
+                   }}>
+                  <Ionicons name="close" size={22} color="#94A3B8" />
+                </TouchableOpacity>
+              </View>
+
+              {!isKeyboardVisible && (
+                <View style={styles.scanActionRow}>
+                  <TouchableOpacity
+                    style={styles.scanActionCard}
+                    activeOpacity={0.85}
+                    onPress={handleTakePhoto}>
+                    <View style={styles.scanActionIcon}>
+                      <Ionicons name="camera-outline" size={20} color="#0EA5E9" />
+                    </View>
+                    <Text style={styles.scanActionText}>Chụp ảnh</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.scanActionCard}
+                    activeOpacity={0.85}
+                    onPress={handlePickImage}>
+                    <View style={styles.scanActionIcon}>
+                      <Ionicons name="cloud-upload-outline" size={20} color="#0EA5E9" />
+                    </View>
+                    <Text style={styles.scanActionText}>Tải ảnh lên</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+               {!!scanImageUri && (
+                <View style={[styles.scanSelected, isKeyboardVisible && styles.scanSelectedCompact]}>
+                  <MaterialCommunityIcons name="image-check-outline" size={16} color="#0EA5E9" />
+                  <Text style={styles.scanSelectedText}>
+                    Đã chọn: {scanImageName || 'Ảnh hóa đơn'}
+                  </Text>
+                 <TouchableOpacity
+                   style={styles.scanSelectedClose}
+                   onPress={() => {
+                     setScanImageUri(null);
+                     setScanImageName('');
+                     setScanImageBase64(null);
+                     setScanImageMimeType(null);
+                     setScanQrText('');
+                     setScanQrError('');
+                     setScanNote('');
+                     setScanQrInfo(null);
+                   }}>
+                    <Ionicons name="close" size={14} color="#0EA5E9" />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+               <View style={styles.scanGuide}>
+                <View style={styles.scanGuideTitleRow}>
+                  <MaterialCommunityIcons name="star-four-points" size={14} color="#0EA5E9" />
+                  <Text style={styles.scanGuideTitle}>Hướng dẫn quét hóa đơn</Text>
+                </View>
+                <View style={styles.scanResult}>
+                <Text style={styles.scanResultLabel}>Mô tả (dùng để phân loại):</Text>
+                <TextInput
+                  style={styles.scanResultInput}
+                  placeholder="Ví dụ: Uống cà phê, đóng tiền học..."
+                  placeholderTextColor="#94A3B8"
+                  value={scanNote}
+                  onChangeText={setScanNote}
+                  multiline
+                />
+                {scanQrLoading && <Text style={styles.scanResultHint}>Đang quét QR...</Text>}
+                {!!scanQrError && !scanQrLoading && (
+                  <Text style={styles.scanResultError}>{scanQrError}</Text>
+                )}
+                {!!scanQrInfo && (
+                  <View style={styles.qrInfoBox}>
+                    <Text style={styles.qrInfoTitle}>Thông tin từ QR</Text>
+                    {!!scanQrInfo.amount && (
+                      <Text style={styles.qrInfoText}>Số tiền: {scanQrInfo.amount}</Text>
+                    )}
+                    {!!scanQrInfo.merchantName && (
+                      <Text style={styles.qrInfoText}>Người nhận: {scanQrInfo.merchantName}</Text>
+                    )}
+                    {!!scanQrInfo.account && (
+                      <Text style={styles.qrInfoText}>Tài khoản: {scanQrInfo.account}</Text>
+                    )}
+                    {!!scanQrInfo.reference && (
+                      <Text style={styles.qrInfoText}>Nội dung: {scanQrInfo.reference}</Text>
+                    )}
+                  </View>
+                )}
+              </View>
+                {!isKeyboardVisible && (
+                  <View style={styles.scanGuideList}>
+                    {[
+                      'Đảm bảo hóa đơn rõ nét, không bị mờ',
+                      'Chụp hóa đơn trong điều kiện đủ ánh sáng',
+                      'AI sẽ tự động phát hiện và trích xuất thông tin',
+                      'Kiểm tra lại thông tin trước khi lưu',
+                    ].map((item) => (
+                      <View key={item} style={styles.scanGuideItem}>
+                        <View style={styles.scanBullet} />
+                        <Text style={styles.scanGuideText}>{item}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.scanActions}>
+                 <TouchableOpacity
+                   style={styles.scanCancel}
+                   onPress={() => {
+                     setIsScanOpen(false);
+                     setScanQrText('');
+                     setScanQrError('');
+                     setScanNote('');
+                     setScanQrInfo(null);
+                   }}>
+                   <Text style={styles.scanCancelText}>Hủy</Text>
+                 </TouchableOpacity>
+                <TouchableOpacity style={styles.scanSave} onPress={() => handleSaveScan('scan')}>
+                  <Text style={styles.scanSaveText}>
+                    {scanQrInfo?.amount ? `Lưu ${formatAmount(Number(scanQrInfo.amount))}` : 'Lưu'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+               </ScrollView>
+             </View>
+           </KeyboardAvoidingView>
+         </View>
+       )}
+
+      {isUploadOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => {
+              setIsUploadOpen(false);
+              setScanQrText('');
+              setScanQrError('');
+              setScanNote('');
+              setScanQrInfo(null);
+            }}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+            style={styles.uploadModalWrapper}>
+            <View style={styles.uploadModal}>
+              <ScrollView
+                contentContainerStyle={[
+                  styles.uploadBody,
+                  { paddingBottom: 24 + insets.bottom },
+                ]}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled">
+                <View style={styles.scanHeader}>
+                <View style={styles.uploadTitleRow}>
+                  <Ionicons name="cloud-upload-outline" size={18} color="#0EA5E9" />
+                  <Text style={styles.scanTitle}>Tải ảnh hóa đơn</Text>
+                </View>
+                 <TouchableOpacity
+                    style={styles.closeButton}
+                   onPress={() => {
+                     setIsUploadOpen(false);
+                     setScanQrText('');
+                     setScanQrError('');
+                     setScanNote('');
+                     setScanQrInfo(null);
+                   }}>
+                  <Ionicons name="close" size={22} color="#94A3B8" />
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.uploadDropzone,
+                  isKeyboardVisible && styles.uploadDropzoneCompact,
+                ]}
+                activeOpacity={0.8}
+                onPress={handlePickImage}>
+                {!!scanImageUri && (
+                  <TouchableOpacity
+                    style={styles.uploadClearButton}
+                   onPress={() => {
+                     setScanImageUri(null);
+                     setScanImageName('');
+                     setScanImageBase64(null);
+                     setScanImageMimeType(null);
+                     setScanQrText('');
+                     setScanQrError('');
+                     setScanNote('');
+                     setScanQrInfo(null);
+                   }}>
+                    <Ionicons name="close" size={14} color="#0EA5E9" />
+                  </TouchableOpacity>
+                )}
+                <View
+                  style={[
+                    styles.uploadIconWrap,
+                    isKeyboardVisible && styles.uploadIconWrapCompact,
+                  ]}>
+                  <MaterialCommunityIcons name="image-outline" size={26} color="#0EA5E9" />
+                </View>
+                <Text style={styles.uploadTitle}>Chọn ảnh hóa đơn</Text>
+                {!isKeyboardVisible && (
+                  <Text style={styles.uploadSubtitle}>Nhấn để chọn ảnh từ thư viện</Text>
+                )}
+                {!!scanImageUri && (
+                  <Text style={styles.uploadSelected}>
+                    Đã chọn: {scanImageName || 'Ảnh hóa đơn'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+               <View style={styles.scanResult}>
+                <Text style={styles.scanResultLabel}>Mô tả (dùng để phân loại):</Text>
+                <TextInput
+                  style={styles.scanResultInput}
+                  placeholder="Ví dụ: Uống cà phê, đóng tiền học..."
+                  placeholderTextColor="#94A3B8"
+                  value={scanNote}
+                  onChangeText={setScanNote}
+                  multiline
+                />
+                {scanQrLoading && <Text style={styles.scanResultHint}>Đang quét QR...</Text>}
+                {!!scanQrError && !scanQrLoading && (
+                  <Text style={styles.scanResultError}>{scanQrError}</Text>
+                )}
+                {!!scanQrInfo && (
+                  <View style={styles.qrInfoBox}>
+                    <Text style={styles.qrInfoTitle}>Thông tin từ QR</Text>
+                    {!!scanQrInfo.amount && (
+                      <Text style={styles.qrInfoText}>Số tiền: {scanQrInfo.amount}</Text>
+                    )}
+                    {!!scanQrInfo.merchantName && (
+                      <Text style={styles.qrInfoText}>Người nhận: {scanQrInfo.merchantName}</Text>
+                    )}
+                    {!!scanQrInfo.account && (
+                      <Text style={styles.qrInfoText}>Tài khoản: {scanQrInfo.account}</Text>
+                    )}
+                    {!!scanQrInfo.reference && (
+                      <Text style={styles.qrInfoText}>Nội dung: {scanQrInfo.reference}</Text>
+                    )}
+                  </View>
+                )}
+              </View>
+
+              {!isKeyboardVisible && (
+                <View style={styles.uploadTip}>
+                  <View style={styles.uploadTipRow}>
+                    <MaterialCommunityIcons name="lightbulb-on-outline" size={14} color="#F59E0B" />
+                    <Text style={styles.uploadTipTitle}>Mẹo để quét tốt hơn:</Text>
+                  </View>
+                  {[
+                    'Chụp rõ nét, đầy đủ thông tin',
+                    'Ánh sáng đủ, tránh bóng mờ',
+                    'Hóa đơn phẳng, không nhăn',
+                  ].map((item) => (
+                    <Text key={item} style={styles.uploadTipText}>
+                      • {item}
+                    </Text>
+                  ))}
+                </View>
+              )}
+
+              <View style={styles.scanActions}>
+                 <TouchableOpacity
+                    style={styles.scanCancel}
+                     onPress={() => {
+                       setIsUploadOpen(false);
+                       setScanQrText('');
+                       setScanQrError('');
+                       setScanNote('');
+                       setScanQrInfo(null);
+                     }}>
+                   <Text style={styles.scanCancelText}>Hủy</Text>
+                 </TouchableOpacity>
+                <TouchableOpacity style={styles.scanSave} onPress={() => handleSaveScan('upload')}>
+                  <Text style={styles.scanSaveText}>
+                    {scanQrInfo?.amount ? `Lưu ${formatAmount(Number(scanQrInfo.amount))}` : 'Lưu'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      )}
+
+      {isDeleteOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => {
+              setIsDeleteOpen(false);
+              setDeleteTarget(null);
+            }}
+          />
+          <View style={styles.deleteModalWrapper}>
+            <View style={styles.deleteModal}>
+              <View style={styles.deleteIcon}>
+                <MaterialCommunityIcons name="trash-can-outline" size={22} color="#0EA5E9" />
+              </View>
+              <Text style={styles.deleteTitle}>Xóa giao dịch</Text>
+              <Text style={styles.deleteText}>Bạn muốn xóa giao dịch này?</Text>
+              <View style={styles.deleteActions}>
+                <TouchableOpacity
+                  style={styles.deleteCancel}
+                  onPress={() => {
+                    setIsDeleteOpen(false);
+                    setDeleteTarget(null);
+                  }}>
+                  <Text style={styles.deleteCancelText}>Quay lại</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.deleteConfirm}
+                  onPress={async () => {
+                    const id = Number(deleteTarget?.id);
+                    setIsDeleteOpen(false);
+                    setDeleteTarget(null);
+                    if (Number.isFinite(id) && id > 0) {
+                      await deleteTransaction(id);
+                    }
+                  }}>
+                  <Text style={styles.deleteConfirmText}>Xóa</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
+
+      <View style={styles.bottomNav}>
+        <TouchableOpacity
+          style={activeTab === 'home' ? styles.navItemActive : styles.navItem}
+          onPress={() => setActiveTab('home')}>
+          <Ionicons
+            name="home"
+            size={20}
+            color={activeTab === 'home' ? '#FFFFFF' : '#64748B'}
+          />
+          <Text style={activeTab === 'home' ? styles.navTextActive : styles.navText}>
+            Tổng quan
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={activeTab === 'transactions' ? styles.navItemActive : styles.navItem}
+          onPress={() => setActiveTab('transactions')}>
+          <MaterialCommunityIcons
+            name="cash-multiple"
+            size={20}
+            color={activeTab === 'transactions' ? '#FFFFFF' : '#64748B'}
+          />
+          <Text style={activeTab === 'transactions' ? styles.navTextActive : styles.navText}>
+            Chi tiêu
+          </Text>
+        </TouchableOpacity>
+        <View style={styles.fabWrapper}>
+          <TouchableOpacity style={styles.fab} onPress={() => setIsQuickAddOpen(true)}>
+            <Ionicons name={isQuickAddOpen ? 'close' : 'add'} size={26} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity
+          style={activeTab === 'community' ? styles.navItemActive : styles.navItem}
+          onPress={() => setActiveTab('community')}>
+          <Ionicons
+            name="people"
+            size={20}
+            color={activeTab === 'community' ? '#FFFFFF' : '#64748B'}
+          />
+          <Text style={activeTab === 'community' ? styles.navTextActive : styles.navText}>
+            Cộng đồng
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={activeTab === 'treasure' ? styles.navItemActive : styles.navItem}
+          onPress={() => setActiveTab('treasure')}>
+          <Ionicons
+            name="trophy"
+            size={20}
+            color={activeTab === 'treasure' ? '#FFFFFF' : '#64748B'}
+          />
+          <Text style={activeTab === 'treasure' ? styles.navTextActive : styles.navText}>
+            Kho báu
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#F5FBFD',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
+    backgroundColor: '#07B8C8',
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  avatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: '#E6F9FC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appName: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  appSubtitle: {
+    color: '#E0F7FA',
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  pointsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0FCDD9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 18,
+  },
+  pointsText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  settingsButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#E6F9FC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  container: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 110,
+    gap: 16,
+  },
+  scoreCard: {
+    backgroundColor: '#04B8C6',
+    borderRadius: 18,
+    padding: 18,
+    gap: 12,
+  },
+  scoreHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  scoreLabel: {
+    color: '#E0F7FA',
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  scoreValue: {
+    color: '#FFFFFF',
+    fontSize: 36,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scoreMax: {
+    color: '#E0F7FA',
+    fontSize: 16,
+    paddingBottom: 6,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scoreStatus: {
+    color: '#E0F7FA',
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scoreIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    borderWidth: 4,
+    borderColor: '#1BD0DC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  progressTrack: {
+    height: 6,
+    backgroundColor: '#0EA5B8',
+    borderRadius: 6,
+  },
+  progressFill: {
+    height: 6,
+    backgroundColor: '#0F172A',
+    borderRadius: 6,
+  },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  tipText: {
+    color: '#E0F7FA',
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chartCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 12,
+  },
+  chartHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  chartTitle: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chartSubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chartButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#06B6D4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chartArea: {
+    height: 180,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+  },
+  chartPlaceholder: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  legendRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  legendText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  bottomNav: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 70,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingBottom: 8,
+  },
+  navItem: {
+    alignItems: 'center',
+    gap: 4,
+    width: 60,
+  },
+  navItemActive: {
+    alignItems: 'center',
+    gap: 4,
+    width: 60,
+    backgroundColor: '#06B6D4',
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  navText: {
+    fontSize: 10,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  navTextActive: {
+    fontSize: 10,
+    color: '#FFFFFF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  fabWrapper: {
+    width: 72,
+    alignItems: 'center',
+  },
+  fab: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#06B6D4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -24,
+    shadowColor: '#0EA5E9',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+  },
+  quickAddStack: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    bottom: 92,
+    gap: 12,
+  },
+  quickAddItem: {
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#EEF2F7',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  quickAddAnim: {
+    overflow: 'hidden',
+  },
+  quickAddItemInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 12,
+  },
+  quickAddIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickAddTextBlock: {
+    flex: 1,
+    gap: 4,
+  },
+  quickAddTitle: {
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  quickAddSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  manualModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  manualModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 16,
+    maxHeight: '82%',
+  },
+  manualHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manualTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  manualSpark: {
+    width: 28,
+    height: 28,
+    borderRadius: 12,
+    backgroundColor: '#E0F7FA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manualTitle: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  segmented: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 16,
+    padding: 4,
+    marginBottom: 12,
+  },
+  segmentButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  segmentActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#CBD5E1',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  segmentText: {
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  segmentTextActive: {
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  manualBody: {
+    gap: 10,
+    paddingBottom: 4,
+  },
+  fieldLabel: {
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  fieldInput: {
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 12,
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  aiHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  aiHintText: {
+    fontSize: 11,
+    color: '#0EA5E9',
+    flex: 1,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 10,
+  },
+  categoryCard: {
+    width: '23%',
+    paddingVertical: 8,
+    borderRadius: 14,
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#EDF2F7',
+    gap: 6,
+    marginBottom: 10,
+  },
+  categoryCardActive: {
+    backgroundColor: '#0EA5E9',
+    borderColor: '#0EA5E9',
+  },
+  categoryIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#E0F7FA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryIconActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  categoryLabel: {
+    fontSize: 10,
+    color: '#0F172A',
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryLabelActive: {
+    color: '#FFFFFF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  manualActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 6,
+  },
+  manualCancel: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+  },
+  manualCancelText: {
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  manualSave: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#7DD3E2',
+    alignItems: 'center',
+  },
+  manualSaveText: {
+    color: '#FFFFFF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scanModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  scanBody: {
+    paddingBottom: 10,
+    gap: 12,
+  },
+  scanModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 16,
+  },
+  scanHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  scanTitle: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scanActionRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
+  },
+  scanActionCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+  },
+  scanActionIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: '#E0F7FA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scanActionText: {
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scanGuide: {
+    borderRadius: 14,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    padding: 12,
+    gap: 8,
+  },
+  scanGuideTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  scanGuideTitle: {
+    fontSize: 12,
+    color: '#0EA5E9',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scanGuideList: {
+    gap: 6,
+  },
+  scanGuideItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  scanBullet: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#0EA5E9',
+    marginTop: 6,
+  },
+  scanGuideText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scanResult: {
+    marginTop: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    backgroundColor: '#EFF6FF',
+    padding: 10,
+  },
+  scanResultLabel: {
+    fontSize: 11,
+    color: '#0EA5E9',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scanResultText: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scanResultInput: {
+    marginTop: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 12,
+    color: '#0F172A',
+    minHeight: 54,
+    textAlignVertical: 'top',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scanResultHint: {
+    marginTop: 6,
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scanResultError: {
+    marginTop: 6,
+    fontSize: 11,
+    color: '#EF4444',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  qrInfoBox: {
+    marginTop: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#D1FAE5',
+    backgroundColor: '#ECFDF3',
+    padding: 10,
+    gap: 4,
+  },
+  qrInfoTitle: {
+    fontSize: 12,
+    color: '#059669',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  qrInfoText: {
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scanActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+  },
+  scanCancel: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  scanCancelText: {
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scanSave: {
+    flex: 1,
+    backgroundColor: '#08B0C9',
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  scanSaveText: {
+    color: '#FFFFFF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  scanSelected: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#E0F7FA',
+    marginBottom: 8,
+  },
+  scanSelectedCompact: {
+    paddingVertical: 4,
+    marginBottom: 6,
+  },
+  scanSelectedText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#0EA5E9',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  scanSelectedClose: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#E0F7FA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  uploadModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  uploadBody: {
+    paddingBottom: 10,
+    gap: 12,
+  },
+  uploadModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 16,
+  },
+  uploadTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  uploadDropzone: {
+    marginTop: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#67E8F9',
+    backgroundColor: '#F0F9FF',
+    paddingVertical: 28,
+    alignItems: 'center',
+    gap: 6,
+    position: 'relative',
+  },
+  uploadDropzoneCompact: {
+    paddingVertical: 10,
+  },
+  uploadClearButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#E0F7FA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  uploadIconWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  uploadIconWrapCompact: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+  },
+  uploadTitle: {
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  uploadSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  uploadSelected: {
+    marginTop: 6,
+    fontSize: 11,
+    color: '#0EA5E9',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  uploadSelectedRow: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  uploadTip: {
+    marginTop: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    backgroundColor: '#FFFBEB',
+    padding: 12,
+    gap: 4,
+  },
+  uploadTipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  uploadTipTitle: {
+    fontSize: 12,
+    color: '#92400E',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  uploadTipText: {
+    fontSize: 11,
+    color: '#92400E',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  txSection: {
+    marginTop: 10,
+    gap: 12,
+  },
+  txHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  txTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  txSubtitle: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  txRefresh: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E0F2FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  txFilterRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  txFilter: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#E0F7FA',
+    borderWidth: 1,
+    borderColor: '#D6F0F6',
+  },
+  txFilterActive: {
+    backgroundColor: '#0EA5E9',
+    borderColor: '#0EA5E9',
+  },
+  txFilterText: {
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  txFilterTextActive: {
+    color: '#FFFFFF',
+  },
+  txCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+  },
+  txStatus: {
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  txError: {
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#EF4444',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  txItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    gap: 10,
+  },
+  txItemLast: {
+    borderBottomWidth: 0,
+  },
+  txBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  txBadgeExpense: {
+    backgroundColor: '#F97316',
+  },
+  txBadgeIncome: {
+    backgroundColor: '#22C55E',
+  },
+  txInfo: {
+    flex: 1,
+  },
+  txLabel: {
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  txMeta: {
+    marginTop: 2,
+    fontSize: 11,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  txAmount: {
+    fontSize: 13,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  txAmountExpense: {
+    color: '#EF4444',
+  },
+  txAmountIncome: {
+    color: '#16A34A',
+  },
+  placeholderCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 20,
+    alignItems: 'center',
+    gap: 8,
+  },
+  placeholderTitle: {
+    fontSize: 15,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  placeholderText: {
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  deleteModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  deleteModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 18,
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  deleteIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#E0F7FA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteTitle: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  deleteText: {
+    fontSize: 12,
+    color: '#64748B',
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  deleteActions: {
+    marginTop: 8,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  deleteCancel: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+  },
+  deleteCancelText: {
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  deleteConfirm: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: '#08B0C9',
+  },
+  deleteConfirmText: {
+    fontSize: 13,
+    color: '#FFFFFF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+});
