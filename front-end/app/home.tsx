@@ -1,9 +1,10 @@
-import {
+﻿import {
   Alert,
   Animated,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
+  PanResponder,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -12,7 +13,9 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Dimensions,
 } from 'react-native';
+import { LineChart } from 'react-native-chart-kit';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -57,6 +60,174 @@ export default function HomeScreen() {
   const [txError, setTxError] = useState('');
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
+  const [onboardingData, setOnboardingData] = useState<any>(null);
+  const now = new Date();
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+  const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
+  const [tooltipInfo, setTooltipInfo] = useState<{ index: number, x: number, y: number } | null>(null);
+  const [chartLayout, setChartLayout] = useState({ width: 0, height: 0 });
+  const [isChartBusy, setIsChartBusy] = useState(false);
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [isCategoryPopupOpen, setIsCategoryPopupOpen] = useState(false);
+  const [selectedCategoryKey, setSelectedCategoryKey] = useState<string | null>(null);
+  const screenWidth = Dimensions.get('window').width;
+  const chartWidth = screenWidth - 90;
+
+  useEffect(() => {
+    if (userEmail) {
+      fetch(`${apiBaseUrl}/api/onboarding?email=${encodeURIComponent(userEmail)}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.exists) setOnboardingData(data.onboarding);
+        })
+        .catch(() => {});
+    }
+  }, [userEmail, apiBaseUrl]);
+  const months = useMemo(() => Array.from({ length: 12 }, (_, i) => i + 1), []);
+  const { chartData, spendPercent, spendPercentRaw, fullLabels, dailyData, totalIncome, totalExpense, monthlyBudget } = useMemo(() => {
+    const daysInMonth = new Date(selectedYear, selectedMonth, 0).getDate();
+    const days = Array.from({ length: daysInMonth }, (_, i) => new Date(selectedYear, selectedMonth - 1, i + 1));
+    const labels: string[] = [];
+    const fullLabels: string[] = [];
+    const spendingData: number[] = [];
+    const incomeData: number[] = [];
+    const dailyData: { expense: number, income: number }[] = [];
+    let cumulativeIncome = 0;
+    let totalExpense = 0;
+
+    const byDate = new Map<string, any[]>();
+    txItems.forEach((tx) => {
+      if (!tx?.occurred_at) return;
+      const d = new Date(tx.occurred_at);
+      if (d.getMonth() + 1 !== selectedMonth || d.getFullYear() !== selectedYear) return;
+      const yStr = d.getFullYear();
+      const mStr = String(d.getMonth() + 1).padStart(2, '0');
+      const dStr = String(d.getDate()).padStart(2, '0');
+      const key = `${yStr}-${mStr}-${dStr}`;
+      const list = byDate.get(key) ?? [];
+      list.push(tx);
+      byDate.set(key, list);
+    });
+
+    for (let i = 0; i < days.length; i++) {
+      const d = days[i];
+      const yStr = d.getFullYear();
+      const mStr = String(d.getMonth() + 1).padStart(2, '0');
+      const dStr = String(d.getDate()).padStart(2, '0');
+      const key = `${yStr}-${mStr}-${dStr}`;
+      const dayTxs = byDate.get(key) ?? [];
+
+      let dayExpense = 0;
+      let dayIncome = 0;
+      dayTxs.forEach((t) => {
+        if (t.type === 'expense') dayExpense += Number(t.amount || 0);
+        if (t.type === 'income') dayIncome += Number(t.amount || 0);
+      });
+
+      cumulativeIncome += dayIncome;
+      totalExpense += dayExpense;
+
+      spendingData.push(dayExpense);
+      incomeData.push(cumulativeIncome);
+      dailyData.push({ expense: dayExpense, income: dayIncome });
+
+      const dayNum = d.getDate();
+      labels.push(dayNum === 1 || dayNum % 5 === 0 ? dayNum.toString() : '');
+      fullLabels.push(`${dayNum}/${d.getMonth() + 1}`);
+    }
+
+    // Calculate dynamic budget: Salary (income category 'lương') in first 10 days
+    const salaryTx = txItems.find(tx => {
+      if (tx.type !== 'income') return false;
+      const d = new Date(tx.occurred_at);
+      if (d.getMonth() + 1 !== selectedMonth || d.getFullYear() !== selectedYear) return false;
+      // Check if it's 'lương' and date <= 10
+      const isSalary = String(tx.category || '').toLowerCase() === 'lương';
+      return isSalary && d.getDate() <= 10;
+    });
+
+    const incomeAmount = salaryTx ? Number(salaryTx.amount || 0) : 0;
+    const needsPct = onboardingData?.needsPct ?? 50;
+    const wantsPct = onboardingData?.wantsPct ?? 30;
+    const BUDGET = (incomeAmount * (needsPct + wantsPct)) / 100;
+
+    const pct = BUDGET > 0 ? (totalExpense / BUDGET) * 100 : 0;
+
+    return {
+      chartData: {
+        labels,
+        datasets: [
+          { data: incomeData, color: () => 'rgba(34, 197, 94, 0.6)', strokeWidth: 1.5 },
+          { data: spendingData, color: () => 'rgba(249, 115, 22, 0.6)', strokeWidth: 1.5 },
+          { data: Array(days.length).fill(BUDGET), color: () => 'rgba(14, 165, 233, 0.5)', strokeWidth: 1, withDots: false, dash: [4, 6] },
+        ]
+      },
+      fullLabels,
+      dailyData,
+      spendPercent: pct.toFixed(0),
+      spendPercentRaw: pct,
+      totalIncome: cumulativeIncome,
+      totalExpense: totalExpense,
+      monthlyBudget: BUDGET // Exporting for UI
+    };
+  }, [txItems, selectedMonth, selectedYear, onboardingData]);
+
+  const chartPanResponder = useMemo(() =>
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        setIsChartBusy(true);
+        const { locationX, locationY } = evt.nativeEvent;
+        if (!chartLayout.width) return;
+        const clampedX = Math.max(0, Math.min(locationX, chartLayout.width));
+        const nextIndex = Math.max(
+          0,
+          Math.min(
+            fullLabels.length - 1,
+            Math.round((clampedX / chartLayout.width) * (fullLabels.length - 1))
+          )
+        );
+        setTooltipInfo({ index: nextIndex, x: clampedX, y: locationY });
+      },
+      onPanResponderMove: (evt) => {
+        const { locationX, locationY } = evt.nativeEvent;
+        if (!chartLayout.width) return;
+        const clampedX = Math.max(0, Math.min(locationX, chartLayout.width));
+        const nextIndex = Math.max(
+          0,
+          Math.min(
+            fullLabels.length - 1,
+            Math.round((clampedX / chartLayout.width) * (fullLabels.length - 1))
+          )
+        );
+        setTooltipInfo({ index: nextIndex, x: clampedX, y: locationY });
+      },
+      onPanResponderRelease: () => {
+        setIsChartBusy(false);
+        setTooltipInfo(null);
+      },
+      onPanResponderTerminate: () => {
+        setIsChartBusy(false);
+        setTooltipInfo(null);
+      },
+    }),
+    [chartLayout.width, fullLabels.length]
+  );
+
+  const monthFilteredTransactions = useMemo(() => {
+    return txItems.filter(tx => {
+      if (!tx?.occurred_at) return false;
+      const d = new Date(tx.occurred_at);
+      return d.getMonth() + 1 === selectedMonth && d.getFullYear() === selectedYear;
+    });
+  }, [txItems, selectedMonth, selectedYear]);
+
   const itemAnim1 = useRef(new Animated.Value(0)).current;
   const itemAnim2 = useRef(new Animated.Value(0)).current;
   const itemAnim3 = useRef(new Animated.Value(0)).current;
@@ -301,6 +472,23 @@ export default function HomeScreen() {
       return `${safeValue} đ`;
     }
   };
+  const formatYAxisLabel = (value: string) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return value;
+    if (Math.abs(num) >= 1_000_000) {
+      return `${(num / 1_000_000).toFixed(1)}M`;
+    }
+    if (Math.abs(num) >= 1_000) {
+      return `${(num / 1_000).toFixed(1)}K`;
+    }
+    return `${num}`;
+  };
+  const formatCompareAxis = (value: number) => {
+    if (!Number.isFinite(value)) return '0';
+    const inMillions = value / 1_000_000;
+    const fixed = inMillions.toFixed(1);
+    return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
+  };
 
   const formatAmountInput = (value: string) => {
     const digits = value.replace(/[^\d]/g, '');
@@ -321,6 +509,24 @@ export default function HomeScreen() {
     const hh = String(date.getHours()).padStart(2, '0');
     const min = String(date.getMinutes()).padStart(2, '0');
     return `${dd}/${mm} ${hh}:${min}`;
+  };
+
+  const normalizeCategoryKey = (value?: string) => {
+    const raw = String(value || 'khac').trim();
+    let fixed = raw;
+    try {
+      fixed = decodeURIComponent(escape(raw));
+    } catch (error) {
+      fixed = raw;
+    }
+    return fixed
+      .toLowerCase()
+      .replace(/đ/g, 'd')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   };
 
   const loadTransactions = async () => {
@@ -405,15 +611,169 @@ export default function HomeScreen() {
   };
 
   const filteredTransactions = useMemo(() => {
-    if (txFilter === 'all') return txItems;
-    return txItems.filter((item) => item?.type === txFilter);
-  }, [txFilter, txItems]);
+    let base = monthFilteredTransactions;
+    if (txFilter !== 'all') {
+      base = base.filter((item) => item?.type === txFilter);
+    }
+    return base;
+  }, [txFilter, monthFilteredTransactions]);
+
+  const expenseCategoryStats = useMemo(() => {
+    const metaByKey: Record<
+      string,
+      { label: string; icon: keyof typeof MaterialCommunityIcons.glyphMap; color: string }
+    > = {
+      'an uong': { label: 'Ăn uống', icon: 'food', color: '#F59E0B' },
+      'di chuyen': { label: 'Di chuyển', icon: 'car', color: '#3B82F6' },
+      'mua sam': { label: 'Mua sắm', icon: 'shopping', color: '#EC4899' },
+      'giai tri': { label: 'Giải trí', icon: 'gamepad-variant', color: '#8B5CF6' },
+      'hoa don': { label: 'Hóa đơn', icon: 'receipt', color: '#10B981' },
+      'suc khoe': { label: 'Sức khỏe', icon: 'heart-pulse', color: '#EF4444' },
+      'giao duc': { label: 'Giáo dục', icon: 'school', color: '#0EA5E9' },
+      khac: { label: 'Khác', icon: 'dots-horizontal', color: '#64748B' },
+    };
+    const aliasMap: Record<string, string> = {
+      'an uong': 'an uong',
+      food: 'an uong',
+      eat: 'an uong',
+      'di chuyen': 'di chuyen',
+      move: 'di chuyen',
+      transport: 'di chuyen',
+      taxi: 'di chuyen',
+      'mua sam': 'mua sam',
+      shop: 'mua sam',
+      shopping: 'mua sam',
+      'giai tri': 'giai tri',
+      fun: 'giai tri',
+      entertainment: 'giai tri',
+      'hoa don': 'hoa don',
+      hoadon: 'hoa don',
+      'hoa_don': 'hoa don',
+      bill: 'hoa don',
+      invoice: 'hoa don',
+      utilities: 'hoa don',
+      'suc khoe': 'suc khoe',
+      health: 'suc khoe',
+      'giao duc': 'giao duc',
+      edu: 'giao duc',
+      education: 'giao duc',
+      khac: 'khac',
+      other: 'khac',
+    };
+    const resolveKeyFromTx = (tx: any) => {
+      const rawKey = tx?.category || tx?.ai_category || 'khac';
+      const normalized = normalizeCategoryKey(rawKey);
+      const compactKey = normalized.replace(/\s+/g, '');
+      const rawLower = String(rawKey || '').toLowerCase();
+      const looksHoaDon =
+        normalized.includes('hoa don') ||
+        normalized.includes('hoadon') ||
+        normalized.includes('hoa_don') ||
+        compactKey === 'hoadon' ||
+        (normalized.includes('hoa') && normalized.includes('don')) ;
+      if (looksHoaDon && (rawLower.includes('don') || normalized.includes('don'))) {
+        return 'hoa don';
+      }
+
+      const mapped = aliasMap[normalized] || aliasMap[compactKey] || normalized;
+      if (metaByKey[mapped]) return mapped;
+
+      const desc = normalizeCategoryKey(tx?.description || '');
+      if (
+        desc.includes('dien') ||
+        desc.includes('nuoc') ||
+        desc.includes('internet') ||
+        desc.includes('wifi') ||
+        desc.includes('dien thoai') ||
+        desc.includes('cuoc') ||
+        desc.includes('gas') ||
+        desc.includes('truyen hinh') ||
+        desc.includes('ve sinh') ||
+        desc.includes('rac')
+      ) {
+        return 'hoa don';
+      }
+
+      return 'khac';
+    };
+    const expenses = monthFilteredTransactions.filter((t) => t?.type === 'expense');
+    const total = expenses.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const byCategory = new Map<string, number>();
+
+    expenses.forEach((t) => {
+      const key = resolveKeyFromTx(t);
+      byCategory.set(key, (byCategory.get(key) || 0) + Number(t.amount || 0));
+    });
+
+    const rows = Array.from(byCategory.entries())
+      .map(([key, amount]) => {
+        const meta = metaByKey[key] || metaByKey.khac;
+        const percent = total > 0 ? (amount / total) * 100 : 0;
+        return { key, amount, percent, meta };
+      })
+      .sort((a, b) => b.amount - a.amount);
+
+    return { total, rows, resolveKeyFromTx };
+  }, [monthFilteredTransactions]);
+
+  const monthlyCompare = useMemo(() => {
+    const base = new Date(selectedYear, selectedMonth - 1, 1);
+    const monthsBack = 6;
+    const buckets = Array.from({ length: monthsBack }, (_, i) => {
+      const d = new Date(base.getFullYear(), base.getMonth() - (monthsBack - 1 - i), 1);
+      return {
+        key: `${d.getFullYear()}-${d.getMonth() + 1}`,
+        label: `${d.getMonth() + 1}/${String(d.getFullYear()).slice(-2)}`,
+        income: 0,
+        expense: 0,
+      };
+    });
+    const map = new Map(buckets.map((b) => [b.key, b]));
+    txItems.forEach((t) => {
+      if (!t?.occurred_at) return;
+      const d = new Date(t.occurred_at);
+      const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+      const bucket = map.get(key);
+      if (!bucket) return;
+      if (t.type === 'income') bucket.income += Number(t.amount || 0);
+      if (t.type === 'expense') bucket.expense += Number(t.amount || 0);
+    });
+    const maxValue = Math.max(
+      1,
+      ...buckets.map((b) => Math.max(b.income, b.expense))
+    );
+    return { buckets, maxValue };
+  }, [txItems, selectedMonth, selectedYear]);
+
+  const compareTicks = useMemo(() => [1, 0.8, 0.6, 0.4, 0.2], []);
+  const compareAxisTicks = useMemo(
+    () => [1, 0.8, 0.6, 0.4, 0.2, 0, 0.2, 0.4, 0.6, 0.8, 1],
+    []
+  );
+
+  const selectedCategoryMeta = useMemo(() => {
+    if (!selectedCategoryKey) return null;
+    return expenseCategoryStats.rows.find((row) => row.key === selectedCategoryKey) || null;
+  }, [expenseCategoryStats.rows, selectedCategoryKey]);
+
+  const selectedCategoryTransactions = useMemo(() => {
+    if (!selectedCategoryKey) return [];
+    return monthFilteredTransactions
+      .filter((t) => t?.type === 'expense')
+      .filter((t) =>
+        expenseCategoryStats.resolveKeyFromTx
+          ? expenseCategoryStats.resolveKeyFromTx(t) === selectedCategoryKey
+          : normalizeCategoryKey(t.category || t.ai_category || 'khác') === selectedCategoryKey
+      )
+      .sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
+  }, [expenseCategoryStats, monthFilteredTransactions, selectedCategoryKey]);
 
   useEffect(() => {
     if (activeTab === 'transactions') {
       loadTransactions();
     }
   }, [activeTab, userEmail, apiBaseUrl]);
+
 
   const handleSaveManual = async () => {
     const mappedCategory = categorySelected ? mapCategoryForApi(category, entryType) : '';
@@ -505,7 +865,7 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView scrollEnabled={!isChartBusy} contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
         {activeTab === 'home' && (
           <>
             <View style={styles.scoreCard}>
@@ -536,16 +896,146 @@ export default function HomeScreen() {
             <View style={styles.chartCard}>
               <View style={styles.chartHeader}>
                 <View>
-                  <Text style={styles.chartTitle}>Xu hướng tài chính 30 ngày</Text>
-                  <Text style={styles.chartSubtitle}>Chi tiêu, Thu nhập & Ngân sách</Text>
+                  <Text style={styles.chartTitle}>Xu hướng tài chính</Text>
+                  <TouchableOpacity onPress={() => setIsMonthPickerOpen(true)} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                    <Text style={styles.chartSubtitle}>Tháng {selectedMonth}/{selectedYear}</Text>
+                    <Ionicons name="chevron-down" size={14} color="#64748B" style={{ marginLeft: 4 }} />
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity style={styles.chartButton}>
-                  <Ionicons name="trending-up" size={16} color="#FFFFFF" />
-                </TouchableOpacity>
+                <View style={styles.chartHeaderActions}>
+                  <TouchableOpacity
+                    onPress={() => setIsCompareOpen(true)}
+                    style={styles.chartMore}
+                  >
+                    <Ionicons name="bar-chart" size={18} color="#0EA5E9" />
+                    <Text style={styles.chartMoreText}>Xem thêm</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                     onPress={() => {
+                       const now = new Date();
+                       setSelectedMonth(now.getMonth() + 1);
+                       setSelectedYear(now.getFullYear());
+                       loadTransactions();
+                     }}
+                     style={styles.chartRefresh}
+                  >
+                    <Ionicons name="refresh" size={20} color="#0EA5E9" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.chartSummary}>
+                <View style={styles.chartSummaryHeader}>
+                  <Text style={styles.chartSummaryLabel}>Chi tiêu / Ngân sách</Text>
+                  <Text style={styles.chartSummaryValue}>{spendPercent}%</Text>
+                </View>
+                <View style={styles.chartProgressTrack}>
+                  <View
+                    style={[
+                      styles.chartProgressFill,
+                      {
+                        width: `${Math.min(100, spendPercentRaw)}%`,
+                        backgroundColor:
+                          spendPercentRaw > 90
+                            ? '#EF4444'
+                            : spendPercentRaw > 70
+                              ? '#F97316'
+                              : spendPercentRaw > 50
+                                ? '#3B82F6'
+                                : '#22C55E',
+                      },
+                    ]}
+                  />
+                </View>
+                <View style={styles.chartSummaryFoot}>
+                  <Text style={styles.chartSummaryFootText}>Ngân sách: {formatAmount(monthlyBudget)}</Text>
+                  <Text style={styles.chartSummaryFootText}>
+                    Đã chi:{' '}
+                    {formatAmount(
+                      monthFilteredTransactions
+                        .filter((t: any) => t.type === 'expense')
+                        .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0)
+                    )}
+                  </Text>
+                </View>
               </View>
 
               <View style={styles.chartArea}>
-                <Text style={styles.chartPlaceholder}>Biểu đồ sẽ hiển thị ở đây</Text>
+                <View
+                  style={styles.chartInner}
+                  onLayout={(evt) => {
+                    const { width, height } = evt.nativeEvent.layout;
+                    setChartLayout({ width, height });
+                  }}
+                  {...chartPanResponder.panHandlers}
+                >
+                  <View pointerEvents="none">
+                  <LineChart
+                    data={chartData}
+                    width={chartWidth}
+                    height={200}
+                      withVerticalLines={true}
+                      withHorizontalLines={true}
+                      withShadow={false}
+                      withDots={true}
+                      formatYLabel={formatYAxisLabel}
+                      chartConfig={{
+                        backgroundColor: '#FFFFFF',
+                        backgroundGradientFrom: '#FFFFFF',
+                        backgroundGradientTo: '#FFFFFF',
+                        decimalPlaces: 0,
+                        color: (opacity = 1) => `rgba(148, 163, 184, ${opacity * 0.8})`,
+                        labelColor: (opacity = 1) => `rgba(148, 163, 184, ${opacity})`,
+                        propsForDots: { r: '1', strokeWidth: '0.5', stroke: '#FFFFFF' },
+                        propsForBackgroundLines: {
+                          strokeDasharray: '3 6',
+                          stroke: '#DCE3ED',
+                          strokeWidth: 1,
+                        },
+                      }}
+                      bezier
+                      style={styles.chartCanvas}
+                    />
+                  </View>
+                </View>
+                {tooltipInfo && (
+                  <View
+                    style={{
+                      position: 'absolute',
+                      left: Math.max(
+                        6,
+                        Math.min(
+                          tooltipInfo.x > (chartLayout.width || chartWidth) / 2
+                            ? tooltipInfo.x - 150  // Show to the left of the finger if on the right side
+                            : tooltipInfo.x + 10,  // Show to the right of the finger if on the left side
+                          (chartLayout.width || chartWidth) - 146
+                        )
+                      ),
+                      top: tooltipInfo.y > 60 ? tooltipInfo.y - 60 : tooltipInfo.y + 15,
+                      backgroundColor: '#0F172A',
+                      padding: 10,
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.08)',
+                      width: 140,
+                      zIndex: 100,
+                    }}>
+                    <Text style={{ fontSize: 12, color: '#F8FAFC', fontWeight: 'bold', marginBottom: 6 }}>
+                      {fullLabels[tooltipInfo.index]}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: '#FDBA74', marginBottom: 4 }}>
+                      • Tổng chi: {formatAmount(chartData.datasets[1]?.data[tooltipInfo.index] || 0)}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: '#86EFAC', marginBottom: 4 }}>
+                      • Tổng thu: {formatAmount(chartData.datasets[0]?.data[tooltipInfo.index] || 0)}
+                    </Text>
+                    {dailyData[tooltipInfo.index]?.expense > 0 && (
+                      <Text style={{ fontSize: 10, color: '#FDE68A' }}>
+                        + Phát sinh chi: {formatAmount(dailyData[tooltipInfo.index].expense)}
+                      </Text>
+                    )}
+                  </View>
+                )}
               </View>
 
               <View style={styles.legendRow}>
@@ -554,14 +1044,43 @@ export default function HomeScreen() {
                   <Text style={styles.legendText}>Chi tiêu</Text>
                 </View>
                 <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#0EA5E9' }]} />
-                  <Text style={styles.legendText}>Ngân sách</Text>
-                </View>
-                <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: '#22C55E' }]} />
                   <Text style={styles.legendText}>Thu nhập</Text>
                 </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#0EA5E9' }]} />
+                  <Text style={styles.legendText}>Ngân sách</Text>
+                </View>
               </View>
+            </View>
+            <View style={[styles.summaryRow, { paddingHorizontal: 0 }]}>
+              <TouchableOpacity 
+                style={styles.summaryCardIncome}
+                onPress={() => {
+                  setTxFilter('income');
+                  setActiveTab('transactions');
+                }}
+              >
+                <View style={styles.summaryIconBoxIncome}>
+                  <Ionicons name="trending-up" size={20} color="#FFFFFF" />
+                </View>
+                <Text style={styles.summaryLabel}>Thu nhập</Text>
+                <Text style={styles.summaryValueIncome}>{formatAmount(totalIncome)}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.summaryCardExpense}
+                onPress={() => {
+                  setTxFilter('expense');
+                  setActiveTab('transactions');
+                }}
+              >
+                <View style={styles.summaryIconBoxExpense}>
+                  <Ionicons name="trending-down" size={20} color="#FFFFFF" />
+                </View>
+                <Text style={styles.summaryLabel}>Chi tiêu</Text>
+                <Text style={styles.summaryValueExpense}>{formatAmount(totalExpense)}</Text>
+              </TouchableOpacity>
             </View>
           </>
         )}
@@ -571,80 +1090,158 @@ export default function HomeScreen() {
             <View style={styles.txHeaderRow}>
               <View>
                 <Text style={styles.txTitle}>Chi tiêu & Thu nhập</Text>
-                <Text style={styles.txSubtitle}>Danh sách giao dịch bạn đã nhập</Text>
               </View>
-              <TouchableOpacity style={styles.txRefresh} onPress={loadTransactions}>
-                <Ionicons name="refresh" size={18} color="#0EA5E9" />
-              </TouchableOpacity>
+              <View style={styles.txHeaderActions}>
+                <TouchableOpacity
+                  onPress={() => setIsMonthPickerOpen(true)}
+                  style={styles.txMonthButton}
+                >
+                  <Text style={styles.txMonthButtonText}>
+                    Tháng {selectedMonth}/{selectedYear}
+                  </Text>
+                  <Ionicons name="chevron-down" size={14} color="#64748B" style={{ marginLeft: 4 }} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.txRefresh} onPress={loadTransactions}>
+                  <Ionicons name="refresh" size={18} color="#0EA5E9" />
+                </TouchableOpacity>
+              </View>
             </View>
 
-            <View style={styles.txFilterRow}>
-              {[
-                { key: 'all', label: 'Tất cả' },
-                { key: 'expense', label: 'Chi tiêu' },
-                { key: 'income', label: 'Thu nhập' },
-              ].map((item) => {
-                const active = txFilter === item.key;
-                return (
-                  <TouchableOpacity
-                    key={item.key}
-                    style={[styles.txFilter, active && styles.txFilterActive]}
-                    onPress={() => setTxFilter(item.key as 'all' | 'expense' | 'income')}>
-                    <Text style={[styles.txFilterText, active && styles.txFilterTextActive]}>
-                      {item.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            <View style={styles.categoryBreakdownCard}>
+              <View style={styles.categoryHeaderRow}>
+                <View style={styles.categoryHeaderTitleRow}>
+                  <MaterialCommunityIcons name="chart-pie" size={16} color="#0EA5E9" />
+                  <Text style={styles.categoryHeaderTitle}>Phân tích theo danh mục</Text>
+                </View>
+                <Text style={styles.categoryHeaderTotal}>
+                  Tổng chi: {formatAmount(expenseCategoryStats.total)}
+                </Text>
+              </View>
 
-            <View style={styles.txCard}>
-              {txLoading && <Text style={styles.txStatus}>Đang tải giao dịch...</Text>}
-              {!!txError && !txLoading && <Text style={styles.txError}>{txError}</Text>}
-              {!txLoading && !txError && filteredTransactions.length === 0 && (
-                <Text style={styles.txStatus}>Chưa có giao dịch nào.</Text>
-              )}
-              {!txLoading &&
-                !txError &&
-                filteredTransactions.map((item, index) => {
-                  const categoryLabel =
-                    item.category ||
-                    item.ai_category ||
-                    (item.type === 'income' ? 'Thu nhập' : 'Khác');
-                  const noteText =
-                    (item.description && String(item.description).trim()) || '';
-                  const isIncome = item.type === 'income';
-                  return (
-                    <Pressable
-                      key={item.id ?? `${item.type}-${index}`}
-                      onLongPress={() => confirmDelete(item)}
-                      style={[styles.txItem, index === filteredTransactions.length - 1 && styles.txItemLast]}>
-                      <View style={[styles.txBadge, isIncome ? styles.txBadgeIncome : styles.txBadgeExpense]}>
-                        <Ionicons
-                          name={isIncome ? 'arrow-up' : 'arrow-down'}
-                          size={14}
-                          color="#FFFFFF"
+              {expenseCategoryStats.rows.length === 0 ? (
+                <Text style={styles.categoryEmptyText}>Chưa có chi tiêu trong tháng này.</Text>
+              ) : (
+                expenseCategoryStats.rows.map((row) => (
+                  <Pressable
+                    key={row.key}
+                    style={styles.categoryRow}
+                    onPress={() => {
+                      setSelectedCategoryKey(row.key);
+                      setIsCategoryPopupOpen(true);
+                    }}
+                  >
+                    <View
+                      style={[
+                        styles.categoryIcon,
+                        { backgroundColor: `${row.meta.color}22` },
+                      ]}
+                    >
+                      <MaterialCommunityIcons
+                        name={row.meta.icon}
+                        size={16}
+                        color={row.meta.color}
+                      />
+                    </View>
+                    <View style={styles.categoryInfo}>
+                      <View style={styles.categoryTopRow}>
+                        <Text style={styles.categoryName}>{row.meta.label}</Text>
+                        <Text style={styles.categoryAmount}>{formatAmount(row.amount)}</Text>
+                      </View>
+                      <View style={styles.categoryBarTrack}>
+                        <View
+                          style={[
+                            styles.categoryBarFill,
+                            { width: `${row.percent}%`, backgroundColor: row.meta.color },
+                          ]}
                         />
                       </View>
-                      <View style={styles.txInfo}>
-                        <Text style={styles.txLabel} numberOfLines={1}>
-                          {categoryLabel}
-                        </Text>
-                        <Text style={styles.txMeta} numberOfLines={1}>
-                          {noteText
-                            ? `${noteText} • ${formatDateTime(item.occurred_at)}`
-                            : `${isIncome ? 'Thu nhập' : 'Chi tiêu'} • ${formatDateTime(
-                                item.occurred_at
-                              )}`}
-                        </Text>
-                      </View>
-                      <Text style={[styles.txAmount, isIncome ? styles.txAmountIncome : styles.txAmountExpense]}>
-                        {isIncome ? '+' : '-'}
-                        {formatAmount(Number(item.amount))}
+                      <Text style={styles.categoryPercent}>
+                        {row.percent.toFixed(1)}% tổng chi tiêu
                       </Text>
-                    </Pressable>
+                    </View>
+                  </Pressable>
+                ))
+              )}
+            </View>
+
+            <View style={styles.txHistoryRow}>
+              <View style={styles.txHistoryHeader}>
+                <Text style={styles.txHistoryTitle}>Lịch sử giao dịch</Text>
+              </View>
+              <View style={styles.txFilterRow}>
+                {[
+                  { key: 'all', label: 'Tất cả' },
+                  { key: 'expense', label: 'Chi tiêu' },
+                  { key: 'income', label: 'Thu nhập' },
+                ].map((item) => {
+                  const active = txFilter === item.key;
+                  return (
+                    <TouchableOpacity
+                      key={item.key}
+                      style={[styles.txFilter, active && styles.txFilterActive]}
+                      onPress={() => setTxFilter(item.key as 'all' | 'expense' | 'income')}>
+                      <Text style={[styles.txFilterText, active && styles.txFilterTextActive]}>
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
                   );
                 })}
+              </View>
+            </View>
+
+            <View style={[styles.txCard, { maxHeight: 520, paddingBottom: 0 }]}>
+              <ScrollView 
+                nestedScrollEnabled={true} 
+                showsVerticalScrollIndicator={true}
+                contentContainerStyle={{ paddingBottom: 10 }}
+              >
+                {txLoading && <Text style={styles.txStatus}>Đang tải giao dịch...</Text>}
+                {!!txError && !txLoading && <Text style={styles.txError}>{txError}</Text>}
+                {!txLoading && !txError && filteredTransactions.length === 0 && (
+                  <Text style={styles.txStatus}>Chưa có giao dịch nào.</Text>
+                )}
+                {!txLoading &&
+                  !txError &&
+                  filteredTransactions.map((item, index) => {
+                    const categoryLabel =
+                      item.category ||
+                      item.ai_category ||
+                      (item.type === 'income' ? 'Thu nhập' : 'Khác');
+                    const noteText =
+                      (item.description && String(item.description).trim()) || '';
+                    const isIncome = item.type === 'income';
+                    return (
+                      <Pressable
+                        key={item.id ?? `${item.type}-${index}`}
+                        onLongPress={() => confirmDelete(item)}
+                        style={[styles.txItem, index === filteredTransactions.length - 1 && styles.txItemLast]}>
+                        <View style={[styles.txBadge, isIncome ? styles.txBadgeIncome : styles.txBadgeExpense]}>
+                          <Ionicons
+                            name={isIncome ? 'arrow-up' : 'arrow-down'}
+                            size={14}
+                            color="#FFFFFF"
+                          />
+                        </View>
+                        <View style={styles.txInfo}>
+                          <Text style={styles.txLabel} numberOfLines={1}>
+                            {categoryLabel}
+                          </Text>
+                          <Text style={styles.txMeta} numberOfLines={1}>
+                            {noteText
+                              ? `${noteText} • ${formatDateTime(item.occurred_at)}`
+                              : `${isIncome ? 'Thu nhập' : 'Chi tiêu'} • ${formatDateTime(
+                                item.occurred_at
+                              )}`}
+                          </Text>
+                        </View>
+                        <Text style={[styles.txAmount, isIncome ? styles.txAmountIncome : styles.txAmountExpense]}>
+                          {isIncome ? '+' : '-'}
+                          {formatAmount(Number(item.amount))}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+              </ScrollView>
             </View>
           </View>
         )}
@@ -902,23 +1499,23 @@ export default function HomeScreen() {
                 <View style={styles.categoryGrid}>
                   {(entryType === 'income'
                     ? [
-                        { key: 'salary', label: 'Lương', icon: 'cash' },
-                        { key: 'bonus', label: 'Thưởng', icon: 'gift' },
-                        { key: 'invest', label: 'Đầu tư', icon: 'chart-line' },
-                        { key: 'other', label: 'Khác', icon: 'cash-multiple' },
-                      ]
+                      { key: 'salary', label: 'Lương', icon: 'cash' },
+                      { key: 'bonus', label: 'Thưởng', icon: 'gift' },
+                      { key: 'invest', label: 'Đầu tư', icon: 'chart-line' },
+                      { key: 'other', label: 'Khác', icon: 'cash-multiple' },
+                    ]
                     : [
-                        { key: 'food', label: 'Ăn uống', icon: 'food' },
-                        { key: 'move', label: 'Di chuyển', icon: 'train-car' },
-                        { key: 'shop', label: 'Mua sắm', icon: 'shopping' },
-                        { key: 'fun', label: 'Giải trí', icon: 'gamepad-variant' },
-                        { key: 'bill', label: 'Hóa đơn', icon: 'receipt' },
-                        { key: 'health', label: 'Sức khỏe', icon: 'heart-pulse' },
-                        { key: 'edu', label: 'Giáo dục', icon: 'school' },
-                        { key: 'other', label: 'Khác', icon: 'cube' },
-                      ]
+                      { key: 'food', label: 'Ăn uống', icon: 'food' },
+                      { key: 'move', label: 'Di chuyển', icon: 'train-car' },
+                      { key: 'shop', label: 'Mua sắm', icon: 'shopping' },
+                      { key: 'fun', label: 'Giải trí', icon: 'gamepad-variant' },
+                      { key: 'bill', label: 'Hóa đơn', icon: 'receipt' },
+                      { key: 'health', label: 'Sức khỏe', icon: 'heart-pulse' },
+                      { key: 'edu', label: 'Giáo dục', icon: 'school' },
+                      { key: 'other', label: 'Khác', icon: 'cube' },
+                    ]
                   ).map((item) => {
-                      const active = categorySelected && category === item.key;
+                    const active = categorySelected && category === item.key;
                     return (
                       <TouchableOpacity
                         key={item.key}
@@ -970,169 +1567,169 @@ export default function HomeScreen() {
         </View>
       )}
 
-       {isScanOpen && (
-         <View style={styles.overlay} pointerEvents="box-none">
-           <Pressable
-             style={styles.modalBackdrop}
-             onPress={() => {
-               setIsScanOpen(false);
-               setScanQrText('');
-               setScanQrError('');
-               setScanNote('');
-               setScanQrInfo(null);
-             }}
-           />
-           <KeyboardAvoidingView
-             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
-             style={styles.scanModalWrapper}>
-             <View style={styles.scanModal}>
-               <ScrollView
-                 contentContainerStyle={[
-                   styles.scanBody,
-                   { paddingBottom: 24 + insets.bottom },
-                 ]}
-                 showsVerticalScrollIndicator={false}
-                 keyboardShouldPersistTaps="handled">
-              <View style={styles.scanHeader}>
-                <Text style={styles.scanTitle}>Quét hóa đơn</Text>
-                 <TouchableOpacity
-                   style={styles.closeButton}
-                   onPress={() => {
-                     setIsScanOpen(false);
-                     setScanQrText('');
-                     setScanQrError('');
-                     setScanNote('');
-                     setScanQrInfo(null);
-                   }}>
-                  <Ionicons name="close" size={22} color="#94A3B8" />
-                </TouchableOpacity>
-              </View>
-
-              {!isKeyboardVisible && (
-                <View style={styles.scanActionRow}>
+      {isScanOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => {
+              setIsScanOpen(false);
+              setScanQrText('');
+              setScanQrError('');
+              setScanNote('');
+              setScanQrInfo(null);
+            }}
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+            style={styles.scanModalWrapper}>
+            <View style={styles.scanModal}>
+              <ScrollView
+                contentContainerStyle={[
+                  styles.scanBody,
+                  { paddingBottom: 24 + insets.bottom },
+                ]}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled">
+                <View style={styles.scanHeader}>
+                  <Text style={styles.scanTitle}>Quét hóa đơn</Text>
                   <TouchableOpacity
-                    style={styles.scanActionCard}
-                    activeOpacity={0.85}
-                    onPress={handleTakePhoto}>
-                    <View style={styles.scanActionIcon}>
-                      <Ionicons name="camera-outline" size={20} color="#0EA5E9" />
-                    </View>
-                    <Text style={styles.scanActionText}>Chụp ảnh</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.scanActionCard}
-                    activeOpacity={0.85}
-                    onPress={handlePickImage}>
-                    <View style={styles.scanActionIcon}>
-                      <Ionicons name="cloud-upload-outline" size={20} color="#0EA5E9" />
-                    </View>
-                    <Text style={styles.scanActionText}>Tải ảnh lên</Text>
+                    style={styles.closeButton}
+                    onPress={() => {
+                      setIsScanOpen(false);
+                      setScanQrText('');
+                      setScanQrError('');
+                      setScanNote('');
+                      setScanQrInfo(null);
+                    }}>
+                    <Ionicons name="close" size={22} color="#94A3B8" />
                   </TouchableOpacity>
                 </View>
-              )}
 
-               {!!scanImageUri && (
-                <View style={[styles.scanSelected, isKeyboardVisible && styles.scanSelectedCompact]}>
-                  <MaterialCommunityIcons name="image-check-outline" size={16} color="#0EA5E9" />
-                  <Text style={styles.scanSelectedText}>
-                    Đã chọn: {scanImageName || 'Ảnh hóa đơn'}
-                  </Text>
-                 <TouchableOpacity
-                   style={styles.scanSelectedClose}
-                   onPress={() => {
-                     setScanImageUri(null);
-                     setScanImageName('');
-                     setScanImageBase64(null);
-                     setScanImageMimeType(null);
-                     setScanQrText('');
-                     setScanQrError('');
-                     setScanNote('');
-                     setScanQrInfo(null);
-                   }}>
-                    <Ionicons name="close" size={14} color="#0EA5E9" />
-                  </TouchableOpacity>
-                </View>
-              )}
-
-               <View style={styles.scanGuide}>
-                <View style={styles.scanGuideTitleRow}>
-                  <MaterialCommunityIcons name="star-four-points" size={14} color="#0EA5E9" />
-                  <Text style={styles.scanGuideTitle}>Hướng dẫn quét hóa đơn</Text>
-                </View>
-                <View style={styles.scanResult}>
-                <Text style={styles.scanResultLabel}>Mô tả (dùng để phân loại):</Text>
-                <TextInput
-                  style={styles.scanResultInput}
-                  placeholder="Ví dụ: Uống cà phê, đóng tiền học..."
-                  placeholderTextColor="#94A3B8"
-                  value={scanNote}
-                  onChangeText={setScanNote}
-                  multiline
-                />
-                {scanQrLoading && <Text style={styles.scanResultHint}>Đang quét QR...</Text>}
-                {!!scanQrError && !scanQrLoading && (
-                  <Text style={styles.scanResultError}>{scanQrError}</Text>
-                )}
-                {!!scanQrInfo && (
-                  <View style={styles.qrInfoBox}>
-                    <Text style={styles.qrInfoTitle}>Thông tin từ QR</Text>
-                    {!!scanQrInfo.amount && (
-                      <Text style={styles.qrInfoText}>Số tiền: {scanQrInfo.amount}</Text>
-                    )}
-                    {!!scanQrInfo.merchantName && (
-                      <Text style={styles.qrInfoText}>Người nhận: {scanQrInfo.merchantName}</Text>
-                    )}
-                    {!!scanQrInfo.account && (
-                      <Text style={styles.qrInfoText}>Tài khoản: {scanQrInfo.account}</Text>
-                    )}
-                    {!!scanQrInfo.reference && (
-                      <Text style={styles.qrInfoText}>Nội dung: {scanQrInfo.reference}</Text>
-                    )}
-                  </View>
-                )}
-              </View>
                 {!isKeyboardVisible && (
-                  <View style={styles.scanGuideList}>
-                    {[
-                      'Đảm bảo hóa đơn rõ nét, không bị mờ',
-                      'Chụp hóa đơn trong điều kiện đủ ánh sáng',
-                      'AI sẽ tự động phát hiện và trích xuất thông tin',
-                      'Kiểm tra lại thông tin trước khi lưu',
-                    ].map((item) => (
-                      <View key={item} style={styles.scanGuideItem}>
-                        <View style={styles.scanBullet} />
-                        <Text style={styles.scanGuideText}>{item}</Text>
+                  <View style={styles.scanActionRow}>
+                    <TouchableOpacity
+                      style={styles.scanActionCard}
+                      activeOpacity={0.85}
+                      onPress={handleTakePhoto}>
+                      <View style={styles.scanActionIcon}>
+                        <Ionicons name="camera-outline" size={20} color="#0EA5E9" />
                       </View>
-                    ))}
+                      <Text style={styles.scanActionText}>Chụp ảnh</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.scanActionCard}
+                      activeOpacity={0.85}
+                      onPress={handlePickImage}>
+                      <View style={styles.scanActionIcon}>
+                        <Ionicons name="cloud-upload-outline" size={20} color="#0EA5E9" />
+                      </View>
+                      <Text style={styles.scanActionText}>Tải ảnh lên</Text>
+                    </TouchableOpacity>
                   </View>
                 )}
-              </View>
 
-              <View style={styles.scanActions}>
-                 <TouchableOpacity
-                   style={styles.scanCancel}
-                   onPress={() => {
-                     setIsScanOpen(false);
-                     setScanQrText('');
-                     setScanQrError('');
-                     setScanNote('');
-                     setScanQrInfo(null);
-                   }}>
-                   <Text style={styles.scanCancelText}>Hủy</Text>
-                 </TouchableOpacity>
-                <TouchableOpacity style={styles.scanSave} onPress={() => handleSaveScan('scan')}>
-                  <Text style={styles.scanSaveText}>
-                    {scanQrInfo?.amount ? `Lưu ${formatAmount(Number(scanQrInfo.amount))}` : 'Lưu'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+                {!!scanImageUri && (
+                  <View style={[styles.scanSelected, isKeyboardVisible && styles.scanSelectedCompact]}>
+                    <MaterialCommunityIcons name="image-check-outline" size={16} color="#0EA5E9" />
+                    <Text style={styles.scanSelectedText}>
+                      Đã chọn: {scanImageName || 'Ảnh hóa đơn'}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.scanSelectedClose}
+                      onPress={() => {
+                        setScanImageUri(null);
+                        setScanImageName('');
+                        setScanImageBase64(null);
+                        setScanImageMimeType(null);
+                        setScanQrText('');
+                        setScanQrError('');
+                        setScanNote('');
+                        setScanQrInfo(null);
+                      }}>
+                      <Ionicons name="close" size={14} color="#0EA5E9" />
+                    </TouchableOpacity>
+                  </View>
+                )}
 
-               </ScrollView>
-             </View>
-           </KeyboardAvoidingView>
-         </View>
-       )}
+                <View style={styles.scanGuide}>
+                  <View style={styles.scanGuideTitleRow}>
+                    <MaterialCommunityIcons name="star-four-points" size={14} color="#0EA5E9" />
+                    <Text style={styles.scanGuideTitle}>Hướng dẫn quét hóa đơn</Text>
+                  </View>
+                  <View style={styles.scanResult}>
+                    <Text style={styles.scanResultLabel}>Mô tả (dùng để phân loại):</Text>
+                    <TextInput
+                      style={styles.scanResultInput}
+                      placeholder="Ví dụ: Uống cà phê, đóng tiền học..."
+                      placeholderTextColor="#94A3B8"
+                      value={scanNote}
+                      onChangeText={setScanNote}
+                      multiline
+                    />
+                    {scanQrLoading && <Text style={styles.scanResultHint}>Đang quét QR...</Text>}
+                    {!!scanQrError && !scanQrLoading && (
+                      <Text style={styles.scanResultError}>{scanQrError}</Text>
+                    )}
+                    {!!scanQrInfo && (
+                      <View style={styles.qrInfoBox}>
+                        <Text style={styles.qrInfoTitle}>Thông tin từ QR</Text>
+                        {!!scanQrInfo.amount && (
+                          <Text style={styles.qrInfoText}>Số tiền: {scanQrInfo.amount}</Text>
+                        )}
+                        {!!scanQrInfo.merchantName && (
+                          <Text style={styles.qrInfoText}>Người nhận: {scanQrInfo.merchantName}</Text>
+                        )}
+                        {!!scanQrInfo.account && (
+                          <Text style={styles.qrInfoText}>Tài khoản: {scanQrInfo.account}</Text>
+                        )}
+                        {!!scanQrInfo.reference && (
+                          <Text style={styles.qrInfoText}>Nội dung: {scanQrInfo.reference}</Text>
+                        )}
+                      </View>
+                    )}
+                  </View>
+                  {!isKeyboardVisible && (
+                    <View style={styles.scanGuideList}>
+                      {[
+                        'Đảm bảo hóa đơn rõ nét, không bị mờ',
+                        'Chụp hóa đơn trong điều kiện đủ ánh sáng',
+                        'AI sẽ tự động phát hiện và trích xuất thông tin',
+                        'Kiểm tra lại thông tin trước khi lưu',
+                      ].map((item) => (
+                        <View key={item} style={styles.scanGuideItem}>
+                          <View style={styles.scanBullet} />
+                          <Text style={styles.scanGuideText}>{item}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.scanActions}>
+                  <TouchableOpacity
+                    style={styles.scanCancel}
+                    onPress={() => {
+                      setIsScanOpen(false);
+                      setScanQrText('');
+                      setScanQrError('');
+                      setScanNote('');
+                      setScanQrInfo(null);
+                    }}>
+                    <Text style={styles.scanCancelText}>Hủy</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.scanSave} onPress={() => handleSaveScan('scan')}>
+                    <Text style={styles.scanSaveText}>
+                      {scanQrInfo?.amount ? `Lưu ${formatAmount(Number(scanQrInfo.amount))}` : 'Lưu'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      )}
 
       {isUploadOpen && (
         <View style={styles.overlay} pointerEvents="box-none">
@@ -1159,132 +1756,132 @@ export default function HomeScreen() {
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled">
                 <View style={styles.scanHeader}>
-                <View style={styles.uploadTitleRow}>
-                  <Ionicons name="cloud-upload-outline" size={18} color="#0EA5E9" />
-                  <Text style={styles.scanTitle}>Tải ảnh hóa đơn</Text>
-                </View>
-                 <TouchableOpacity
-                    style={styles.closeButton}
-                   onPress={() => {
-                     setIsUploadOpen(false);
-                     setScanQrText('');
-                     setScanQrError('');
-                     setScanNote('');
-                     setScanQrInfo(null);
-                   }}>
-                  <Ionicons name="close" size={22} color="#94A3B8" />
-                </TouchableOpacity>
-              </View>
-
-              <TouchableOpacity
-                style={[
-                  styles.uploadDropzone,
-                  isKeyboardVisible && styles.uploadDropzoneCompact,
-                ]}
-                activeOpacity={0.8}
-                onPress={handlePickImage}>
-                {!!scanImageUri && (
+                  <View style={styles.uploadTitleRow}>
+                    <Ionicons name="cloud-upload-outline" size={18} color="#0EA5E9" />
+                    <Text style={styles.scanTitle}>Tải ảnh hóa đơn</Text>
+                  </View>
                   <TouchableOpacity
-                    style={styles.uploadClearButton}
-                   onPress={() => {
-                     setScanImageUri(null);
-                     setScanImageName('');
-                     setScanImageBase64(null);
-                     setScanImageMimeType(null);
-                     setScanQrText('');
-                     setScanQrError('');
-                     setScanNote('');
-                     setScanQrInfo(null);
-                   }}>
-                    <Ionicons name="close" size={14} color="#0EA5E9" />
+                    style={styles.closeButton}
+                    onPress={() => {
+                      setIsUploadOpen(false);
+                      setScanQrText('');
+                      setScanQrError('');
+                      setScanNote('');
+                      setScanQrInfo(null);
+                    }}>
+                    <Ionicons name="close" size={22} color="#94A3B8" />
                   </TouchableOpacity>
-                )}
-                <View
+                </View>
+
+                <TouchableOpacity
                   style={[
-                    styles.uploadIconWrap,
-                    isKeyboardVisible && styles.uploadIconWrapCompact,
-                  ]}>
-                  <MaterialCommunityIcons name="image-outline" size={26} color="#0EA5E9" />
-                </View>
-                <Text style={styles.uploadTitle}>Chọn ảnh hóa đơn</Text>
-                {!isKeyboardVisible && (
-                  <Text style={styles.uploadSubtitle}>Nhấn để chọn ảnh từ thư viện</Text>
-                )}
-                {!!scanImageUri && (
-                  <Text style={styles.uploadSelected}>
-                    Đã chọn: {scanImageName || 'Ảnh hóa đơn'}
-                  </Text>
-                )}
-              </TouchableOpacity>
-               <View style={styles.scanResult}>
-                <Text style={styles.scanResultLabel}>Mô tả (dùng để phân loại):</Text>
-                <TextInput
-                  style={styles.scanResultInput}
-                  placeholder="Ví dụ: Uống cà phê, đóng tiền học..."
-                  placeholderTextColor="#94A3B8"
-                  value={scanNote}
-                  onChangeText={setScanNote}
-                  multiline
-                />
-                {scanQrLoading && <Text style={styles.scanResultHint}>Đang quét QR...</Text>}
-                {!!scanQrError && !scanQrLoading && (
-                  <Text style={styles.scanResultError}>{scanQrError}</Text>
-                )}
-                {!!scanQrInfo && (
-                  <View style={styles.qrInfoBox}>
-                    <Text style={styles.qrInfoTitle}>Thông tin từ QR</Text>
-                    {!!scanQrInfo.amount && (
-                      <Text style={styles.qrInfoText}>Số tiền: {scanQrInfo.amount}</Text>
-                    )}
-                    {!!scanQrInfo.merchantName && (
-                      <Text style={styles.qrInfoText}>Người nhận: {scanQrInfo.merchantName}</Text>
-                    )}
-                    {!!scanQrInfo.account && (
-                      <Text style={styles.qrInfoText}>Tài khoản: {scanQrInfo.account}</Text>
-                    )}
-                    {!!scanQrInfo.reference && (
-                      <Text style={styles.qrInfoText}>Nội dung: {scanQrInfo.reference}</Text>
-                    )}
+                    styles.uploadDropzone,
+                    isKeyboardVisible && styles.uploadDropzoneCompact,
+                  ]}
+                  activeOpacity={0.8}
+                  onPress={handlePickImage}>
+                  {!!scanImageUri && (
+                    <TouchableOpacity
+                      style={styles.uploadClearButton}
+                      onPress={() => {
+                        setScanImageUri(null);
+                        setScanImageName('');
+                        setScanImageBase64(null);
+                        setScanImageMimeType(null);
+                        setScanQrText('');
+                        setScanQrError('');
+                        setScanNote('');
+                        setScanQrInfo(null);
+                      }}>
+                      <Ionicons name="close" size={14} color="#0EA5E9" />
+                    </TouchableOpacity>
+                  )}
+                  <View
+                    style={[
+                      styles.uploadIconWrap,
+                      isKeyboardVisible && styles.uploadIconWrapCompact,
+                    ]}>
+                    <MaterialCommunityIcons name="image-outline" size={26} color="#0EA5E9" />
                   </View>
-                )}
-              </View>
-
-              {!isKeyboardVisible && (
-                <View style={styles.uploadTip}>
-                  <View style={styles.uploadTipRow}>
-                    <MaterialCommunityIcons name="lightbulb-on-outline" size={14} color="#F59E0B" />
-                    <Text style={styles.uploadTipTitle}>Mẹo để quét tốt hơn:</Text>
-                  </View>
-                  {[
-                    'Chụp rõ nét, đầy đủ thông tin',
-                    'Ánh sáng đủ, tránh bóng mờ',
-                    'Hóa đơn phẳng, không nhăn',
-                  ].map((item) => (
-                    <Text key={item} style={styles.uploadTipText}>
-                      • {item}
+                  <Text style={styles.uploadTitle}>Chọn ảnh hóa đơn</Text>
+                  {!isKeyboardVisible && (
+                    <Text style={styles.uploadSubtitle}>Nhấn để chọn ảnh từ thư viện</Text>
+                  )}
+                  {!!scanImageUri && (
+                    <Text style={styles.uploadSelected}>
+                      Đã chọn: {scanImageName || 'Ảnh hóa đơn'}
                     </Text>
-                  ))}
-                </View>
-              )}
-
-              <View style={styles.scanActions}>
-                 <TouchableOpacity
-                    style={styles.scanCancel}
-                     onPress={() => {
-                       setIsUploadOpen(false);
-                       setScanQrText('');
-                       setScanQrError('');
-                       setScanNote('');
-                       setScanQrInfo(null);
-                     }}>
-                   <Text style={styles.scanCancelText}>Hủy</Text>
-                 </TouchableOpacity>
-                <TouchableOpacity style={styles.scanSave} onPress={() => handleSaveScan('upload')}>
-                  <Text style={styles.scanSaveText}>
-                    {scanQrInfo?.amount ? `Lưu ${formatAmount(Number(scanQrInfo.amount))}` : 'Lưu'}
-                  </Text>
+                  )}
                 </TouchableOpacity>
-              </View>
+                <View style={styles.scanResult}>
+                  <Text style={styles.scanResultLabel}>Mô tả (dùng để phân loại):</Text>
+                  <TextInput
+                    style={styles.scanResultInput}
+                    placeholder="Ví dụ: Uống cà phê, đóng tiền học..."
+                    placeholderTextColor="#94A3B8"
+                    value={scanNote}
+                    onChangeText={setScanNote}
+                    multiline
+                  />
+                  {scanQrLoading && <Text style={styles.scanResultHint}>Đang quét QR...</Text>}
+                  {!!scanQrError && !scanQrLoading && (
+                    <Text style={styles.scanResultError}>{scanQrError}</Text>
+                  )}
+                  {!!scanQrInfo && (
+                    <View style={styles.qrInfoBox}>
+                      <Text style={styles.qrInfoTitle}>Thông tin từ QR</Text>
+                      {!!scanQrInfo.amount && (
+                        <Text style={styles.qrInfoText}>Số tiền: {scanQrInfo.amount}</Text>
+                      )}
+                      {!!scanQrInfo.merchantName && (
+                        <Text style={styles.qrInfoText}>Người nhận: {scanQrInfo.merchantName}</Text>
+                      )}
+                      {!!scanQrInfo.account && (
+                        <Text style={styles.qrInfoText}>Tài khoản: {scanQrInfo.account}</Text>
+                      )}
+                      {!!scanQrInfo.reference && (
+                        <Text style={styles.qrInfoText}>Nội dung: {scanQrInfo.reference}</Text>
+                      )}
+                    </View>
+                  )}
+                </View>
+
+                {!isKeyboardVisible && (
+                  <View style={styles.uploadTip}>
+                    <View style={styles.uploadTipRow}>
+                      <MaterialCommunityIcons name="lightbulb-on-outline" size={14} color="#F59E0B" />
+                      <Text style={styles.uploadTipTitle}>Mẹo để quét tốt hơn:</Text>
+                    </View>
+                    {[
+                      'Chụp rõ nét, đầy đủ thông tin',
+                      'Ánh sáng đủ, tránh bóng mờ',
+                      'Hóa đơn phẳng, không nhăn',
+                    ].map((item) => (
+                      <Text key={item} style={styles.uploadTipText}>
+                        • {item}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+
+                <View style={styles.scanActions}>
+                  <TouchableOpacity
+                    style={styles.scanCancel}
+                    onPress={() => {
+                      setIsUploadOpen(false);
+                      setScanQrText('');
+                      setScanQrError('');
+                      setScanNote('');
+                      setScanQrInfo(null);
+                    }}>
+                    <Text style={styles.scanCancelText}>Hủy</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.scanSave} onPress={() => handleSaveScan('upload')}>
+                    <Text style={styles.scanSaveText}>
+                      {scanQrInfo?.amount ? `Lưu ${formatAmount(Number(scanQrInfo.amount))}` : 'Lưu'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </ScrollView>
             </View>
           </KeyboardAvoidingView>
@@ -1329,6 +1926,233 @@ export default function HomeScreen() {
                   <Text style={styles.deleteConfirmText}>Xóa</Text>
                 </TouchableOpacity>
               </View>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {isMonthPickerOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setIsMonthPickerOpen(false)}
+          />
+          <View style={[styles.deleteModalWrapper, { justifyContent: 'center', paddingHorizontal: 24 }]}>
+            <View style={[styles.deleteModal, { paddingBottom: 20, paddingTop: 20 }]}>
+              <View style={{ width: 40, height: 4, backgroundColor: '#E2E8F0', borderRadius: 2, marginBottom: 12 }} />
+              <Text style={styles.deleteTitle}>Chọn tháng / năm</Text>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginVertical: 16, gap: 16 }}>
+                <TouchableOpacity onPress={() => setSelectedYear(prev => prev - 1)} style={{ padding: 8, backgroundColor: '#F8FAFC', borderRadius: 8 }}>
+                  <Ionicons name="chevron-back" size={20} color="#0F172A" />
+                </TouchableOpacity>
+                <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0F172A' }}>Năm {selectedYear}</Text>
+                <TouchableOpacity onPress={() => setSelectedYear(prev => prev + 1)} style={{ padding: 8, backgroundColor: '#F8FAFC', borderRadius: 8 }}>
+                  <Ionicons name="chevron-forward" size={20} color="#0F172A" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 12 }}>
+                {months.map(m => (
+                  <TouchableOpacity
+                    key={m}
+                    onPress={() => {
+                      setSelectedMonth(m);
+                    }}
+                    style={{
+                      width: '28%',
+                      paddingVertical: 12,
+                      alignItems: 'center',
+                      borderRadius: 12,
+                      backgroundColor: selectedMonth === m ? '#08B0C9' : '#F8FAFC',
+                      borderWidth: 1,
+                      borderColor: selectedMonth === m ? '#08B0C9' : '#E2E8F0',
+                    }}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: '600', color: selectedMonth === m ? '#FFFFFF' : '#64748B' }}>Tháng {m}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
+                <TouchableOpacity
+                  style={[styles.deleteCancel, { flex: 1 }]}
+                  onPress={() => setIsMonthPickerOpen(false)}
+                >
+                  <Text style={styles.deleteCancelText}>Hủy</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {isCompareOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsCompareOpen(false)} />
+          <View style={styles.compareModalWrapper}>
+            <View style={styles.compareModal}>
+              <View style={styles.compareHeader}>
+                <View>
+                  <Text style={styles.compareTitle}>So sánh thu/chi theo tháng</Text>
+                  <Text style={styles.compareSubtitle}>Trục giữa là mốc 0</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.compareClose}
+                  onPress={() => setIsCompareOpen(false)}
+                >
+                  <Ionicons name="close" size={18} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.compareLegend}>
+                <View style={styles.compareLegendItem}>
+                  <View style={[styles.compareLegendDot, { backgroundColor: '#22C55E' }]} />
+                  <Text style={styles.compareLegendText}>Thu nhập</Text>
+                </View>
+                <View style={styles.compareLegendItem}>
+                  <View style={[styles.compareLegendDot, { backgroundColor: '#F97316' }]} />
+                  <Text style={styles.compareLegendText}>Chi tiêu</Text>
+                </View>
+              </View>
+
+              <View style={styles.compareChart}>
+                <View style={styles.compareGrid}>
+                  {compareTicks.map((t) => (
+                    <View
+                      key={`top-${t}`}
+                      style={[styles.compareGridLine, { top: `${50 - t * 40}%` }]}
+                    />
+                  ))}
+                  {compareTicks.map((t) => (
+                    <View
+                      key={`bottom-${t}`}
+                      style={[styles.compareGridLine, { top: `${50 + t * 40}%` }]}
+                    />
+                  ))}
+                </View>
+                <View style={styles.compareContent}>
+                  <View style={styles.compareYAxis}>
+                    {compareAxisTicks.map((t, index) => {
+                      if (t === 0) {
+                        return (
+                          <Text key={`tick-${index}`} style={styles.compareAxisLabelMid}>
+                            0
+                          </Text>
+                        );
+                      }
+                      return (
+                        <Text key={`tick-${index}`} style={styles.compareAxisLabel}>
+                          {formatCompareAxis(monthlyCompare.maxValue * t)}
+                        </Text>
+                      );
+                    })}
+                  </View>
+                  <View style={styles.compareBarsRow}>
+                    {monthlyCompare.buckets.map((b) => {
+                      const incomeHeight = Math.round((b.income / monthlyCompare.maxValue) * 70);
+                      const expenseHeight = Math.round((b.expense / monthlyCompare.maxValue) * 70);
+                      return (
+                        <View key={b.key} style={styles.compareBarGroup}>
+                          <View style={styles.compareBarTop}>
+                            <View
+                              style={[
+                                styles.compareBar,
+                                styles.compareBarIncome,
+                                { height: incomeHeight },
+                              ]}
+                            />
+                          </View>
+                          <View style={styles.compareLabelWrap}>
+                            <Text style={styles.compareLabel}>{b.label}</Text>
+                          </View>
+                          <View style={styles.compareBarBottom}>
+                            <View
+                              style={[
+                                styles.compareBar,
+                                styles.compareBarExpense,
+                                { height: expenseHeight },
+                              ]}
+                            />
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {isCategoryPopupOpen && selectedCategoryKey && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setIsCategoryPopupOpen(false)}
+          />
+          <View style={styles.categoryModalWrapper}>
+            <View style={styles.categoryModal}>
+              <View style={styles.categoryModalHeader}>
+                <View style={styles.categoryModalTitleRow}>
+                  <View
+                    style={[
+                      styles.categoryIcon,
+                      { backgroundColor: `${selectedCategoryMeta?.meta.color ?? '#64748B'}22` },
+                    ]}
+                  >
+                    <MaterialCommunityIcons
+                      name={selectedCategoryMeta?.meta.icon ?? 'dots-horizontal'}
+                      size={16}
+                      color={selectedCategoryMeta?.meta.color ?? '#64748B'}
+                    />
+                  </View>
+                  <View style={styles.categoryModalTitleText}>
+                    <Text style={styles.categoryModalTitle}>
+                      {selectedCategoryMeta?.meta.label ?? 'Khác'}
+                    </Text>
+                    <Text style={styles.categoryModalSubtitle}>
+                      Tổng: {formatAmount(selectedCategoryMeta?.amount || 0)}
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.categoryModalClose}
+                  onPress={() => setIsCategoryPopupOpen(false)}
+                >
+                  <Ionicons name="close" size={18} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={styles.categoryModalList}
+                contentContainerStyle={{ paddingBottom: 8 }}
+                showsVerticalScrollIndicator={true}
+              >
+                {selectedCategoryTransactions.length === 0 ? (
+                  <Text style={styles.categoryModalEmpty}>Chưa có giao dịch trong mục này.</Text>
+                ) : (
+                  selectedCategoryTransactions.map((item, index) => (
+                    <View
+                      key={item.id ?? `${selectedCategoryKey}-${index}`}
+                      style={styles.categoryModalItem}
+                    >
+                      <View style={styles.categoryModalItemInfo}>
+                        <Text style={styles.categoryModalItemTitle} numberOfLines={1}>
+                          {(item.description && String(item.description).trim()) || 'Giao dịch'}
+                        </Text>
+                        <Text style={styles.categoryModalItemMeta} numberOfLines={1}>
+                          {formatDateTime(item.occurred_at)}
+                        </Text>
+                      </View>
+                      <Text style={styles.categoryModalItemAmount}>
+                        -{formatAmount(Number(item.amount))}
+                      </Text>
+                    </View>
+                  ))
+                )}
+              </ScrollView>
             </View>
           </View>
         </View>
@@ -1571,10 +2395,70 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
     gap: 12,
   },
+  chartSummary: {
+    marginTop: 6,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 8,
+  },
+  chartSummaryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  chartSummaryLabel: {
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chartSummaryValue: {
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chartProgressTrack: {
+    height: 8,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  chartProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  chartSummaryFoot: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  chartSummaryFootText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
   chartHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  chartHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   chartTitle: {
     fontSize: 14,
@@ -1602,15 +2486,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  chartArea: {
-    height: 180,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: '#CBD5E1',
+  chartMore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: '#E0F2FE',
+  },
+  chartMoreText: {
+    fontSize: 11,
+    color: '#0EA5E9',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chartRefresh: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E0F2FE',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F8FAFC',
+  },
+  chartArea: {
+    height: 232,
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 0,
+  },
+  chartInner: {
+    paddingLeft: 10,
+  },
+  chartCanvas: {
+    marginVertical: 2,
+    paddingRight: 50,
   },
   chartPlaceholder: {
     color: '#94A3B8',
@@ -1624,6 +2537,8 @@ const styles = StyleSheet.create({
   legendRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    rowGap: 8,
   },
   legendItem: {
     flexDirection: 'row',
@@ -1643,6 +2558,60 @@ const styles = StyleSheet.create({
       android: 'sans-serif',
       default: 'Avenir Next',
     }),
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 5,
+  },
+  summaryCardIncome: {
+    flex: 1,
+    backgroundColor: '#E6F9FC',
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#B0E9F0',
+    gap: 4,
+  },
+  summaryCardExpense: {
+    flex: 1,
+    backgroundColor: '#FFF7ED',
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#FFEDD5',
+    gap: 4,
+  },
+  summaryIconBoxIncome: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#08B0C9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryIconBoxExpense: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F97316',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryLabel: {
+    fontSize: 14,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  summaryValueIncome: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#08B0C9',
+  },
+  summaryValueExpense: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#F97316',
   },
   bottomNav: {
     position: 'absolute',
@@ -2391,11 +3360,393 @@ const styles = StyleSheet.create({
     marginTop: 10,
     gap: 12,
   },
+  categoryBreakdownCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 14,
+    gap: 12,
+  },
+  categoryHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  categoryHeaderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  categoryHeaderTitle: {
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryHeaderTotal: {
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryEmptyText: {
+    fontSize: 12,
+    color: '#94A3B8',
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  categoryIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryInfo: {
+    flex: 1,
+    gap: 6,
+  },
+  categoryTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  categoryName: {
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryAmount: {
+    fontSize: 12,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryBarTrack: {
+    height: 6,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  categoryBarFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  categoryPercent: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  categoryModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    maxHeight: '70%',
+  },
+  categoryModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  categoryModalTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  categoryModalTitleText: {
+    gap: 2,
+  },
+  categoryModalTitle: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryModalSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryModalClose: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F1F5F9',
+  },
+  categoryModalList: {
+    maxHeight: 360,
+  },
+  categoryModalEmpty: {
+    fontSize: 12,
+    color: '#94A3B8',
+    textAlign: 'center',
+    paddingVertical: 16,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryModalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  categoryModalItemInfo: {
+    flex: 1,
+    marginRight: 10,
+  },
+  categoryModalItemTitle: {
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryModalItemMeta: {
+    marginTop: 2,
+    fontSize: 11,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  categoryModalItemAmount: {
+    fontSize: 12,
+    color: '#EF4444',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  compareModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  compareModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  compareHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  compareTitle: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  compareSubtitle: {
+    marginTop: 2,
+    fontSize: 11,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  compareClose: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  compareLegend: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 10,
+  },
+  compareLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  compareLegendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  compareLegendText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  compareChart: {
+    marginTop: 12,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    height: 220,
+  },
+  compareGrid: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  compareGridLine: {
+    position: 'absolute',
+    left: 10,
+    right: 10,
+    height: 1,
+    backgroundColor: '#E6ECF5',
+  },
+  compareGridLineStrong: {
+    position: 'absolute',
+    left: 10,
+    right: 10,
+    height: 1,
+    backgroundColor: '#D8E0EC',
+  },
+  compareContent: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  compareYAxis: {
+    width: 44,
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  compareAxisLabel: {
+    fontSize: 10,
+    color: '#94A3B8',
+    textAlign: 'right',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  compareAxisLabelMid: {
+    fontSize: 10,
+    color: '#64748B',
+    textAlign: 'right',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  compareBarsRow: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  compareBarGroup: {
+    width: '14%',
+    alignItems: 'center',
+  },
+  compareBarTop: {
+    height: 70,
+    justifyContent: 'flex-end',
+  },
+  compareLabelWrap: {
+    height: 24,
+    justifyContent: 'center',
+  },
+  compareBarBottom: {
+    height: 70,
+    justifyContent: 'flex-start',
+  },
+  compareBar: {
+    width: 10,
+    borderRadius: 0,
+  },
+  compareBarIncome: {
+    backgroundColor: '#22C55E',
+  },
+  compareBarExpense: {
+    backgroundColor: '#F97316',
+  },
+  compareLabel: {
+    fontSize: 10,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
   txHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
+  },
+  txHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   txTitle: {
     fontSize: 18,
@@ -2424,9 +3775,46 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  txMonthButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  txMonthButtonText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
   txFilterRow: {
     flexDirection: 'row',
     gap: 8,
+  },
+  txHistoryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  txHistoryHeader: {
+    marginTop: 2,
+  },
+  txHistoryTitle: {
+    fontSize: 15,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
   },
   txFilter: {
     paddingHorizontal: 12,

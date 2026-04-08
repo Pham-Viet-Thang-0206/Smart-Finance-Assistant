@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
@@ -274,7 +274,7 @@ const classifyTransaction = async ({ text, type, imageBase64, imageMimeType }) =
     const normalizedType =
       parsed.type === 'income' || parsed.type === 'expense' ? parsed.type : type || 'expense';
     const categories = normalizedType === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
-    const normalizedCategory = categories.includes(parsed.category) ? parsed.category : 'other';
+    const normalizedCategory = categories.includes(parsed.category) ? parsed.category : 'khác';
 
     return {
       category: normalizedCategory,
@@ -282,7 +282,7 @@ const classifyTransaction = async ({ text, type, imageBase64, imageMimeType }) =
       confidence: Number.isFinite(parsed.confidence) ? parsed.confidence : 0,
     };
   } catch (error) {
-    return { category: 'other', type: type || 'expense', confidence: 0 };
+    return { category: 'khác', type: type || 'expense', confidence: 0 };
   }
 };
 app.get('/health', (_req, res) => {
@@ -559,14 +559,14 @@ app.post('/api/transactions', async (req, res) => {
     } = req.body ?? {};
 
     if (!email) {
-      return res.status(400).json({ message: 'Email l� b?t bu?c.' });
+      return res.status(400).json({ message: 'Email là bắt buộc.' });
     }
 
     const normalizedEmail = normalizeEmail(String(email));
     const [users] = await pool.execute('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
     const user = users?.[0];
     if (!user) {
-      return res.status(404).json({ message: 'Kh�ng t�m th?y ngu?i d�ng.' });
+      return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
     }
 
     let finalType = type === 'income' ? 'income' : type === 'expense' ? 'expense' : undefined;
@@ -664,7 +664,7 @@ app.post('/api/transactions', async (req, res) => {
       qrText,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'L?i m�y ch?.' });
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
   }
 });
 
@@ -705,7 +705,7 @@ app.get('/api/transactions', async (req, res) => {
   try {
     const email = req.query.email;
     if (!email) {
-      return res.status(400).json({ message: 'Email l� b?t bu?c.' });
+      return res.status(400).json({ message: 'Email là bắt buộc.' });
     }
 
     const normalizedEmail = normalizeEmail(String(email));
@@ -719,14 +719,13 @@ app.get('/api/transactions', async (req, res) => {
       `SELECT id, type, amount, description, category, source, ai_category, ai_confidence, raw_text, attachment_url, occurred_at
        FROM user_transactions
        WHERE user_id = ?
-       ORDER BY occurred_at DESC
-       LIMIT 100`,
+       ORDER BY occurred_at DESC`,
       [user.id]
     );
 
     return res.json({ items: rows });
   } catch (error) {
-    return res.status(500).json({ message: 'L?i m�y ch?.' });
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
   }
 });
 
