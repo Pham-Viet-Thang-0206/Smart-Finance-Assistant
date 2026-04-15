@@ -1,4 +1,4 @@
-﻿import {
+import {
   Alert,
   Animated,
   Keyboard,
@@ -14,11 +14,12 @@
   TouchableOpacity,
   View,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { LineChart } from 'react-native-chart-kit';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -61,6 +62,278 @@ export default function HomeScreen() {
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
   const [onboardingData, setOnboardingData] = useState<any>(null);
+
+  // --- Community Features ---
+  const [communityPosts, setCommunityPosts] = useState<any[]>([]);
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [isCommentModalOpen, setIsCommentModalOpen] = useState(false);
+  const [selectedPost, setSelectedPost] = useState<any>(null);
+  const [comments, setComments] = useState<any[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [newComment, setNewComment] = useState('');
+  const [replyToComment, setReplyToComment] = useState<any>(null);
+  const [expandedComments, setExpandedComments] = useState<number[]>([]);
+  const [newPostContent, setNewPostContent] = useState('');
+  const [communityTab, setCommunityTab] = useState<'feed' | 'ranking'>('feed');
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [activeMenuPostId, setActiveMenuPostId] = useState<number | null>(null);
+  const [isEditPostModalOpen, setIsEditPostModalOpen] = useState(false);
+  const [editingPost, setEditingPost] = useState<any>(null);
+  const [editingContent, setEditingContent] = useState('');
+  const [rankingData, setRankingData] = useState<any[]>([]);
+  const [rankingLoading, setRankingLoading] = useState(false);
+  const [customConfirm, setCustomConfirm] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    type: 'delete' | 'update';
+    onConfirm: () => void;
+  }>({
+    visible: false,
+    title: '',
+    message: '',
+    type: 'update',
+    onConfirm: () => {},
+  });
+
+  const formatCommunityTime = (date: string | Date) => {
+    const d = new Date(date);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes} ${day}/${month}/${year}`;
+  };
+
+  const loadUserInfo = async () => {
+    if (!params.email) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/onboarding?email=${encodeURIComponent(String(params.email))}`);
+      const data = await response.json();
+      if (response.ok && data.exists) {
+        // Find user ID from the response or set a default
+        setCurrentUser({ ...data.user, id: data.userId || 1 }); 
+      }
+    } catch (error) {}
+  };
+
+  const loadCommunityPosts = async () => {
+    if (activeTab !== 'community') return;
+    setPostsLoading(true);
+    try {
+      const uId = currentUser?.id || 1;
+      const response = await fetch(`${API_BASE_URL}/api/community/posts?userId=${uId}`);
+      const data = await response.json();
+      if (response.ok) {
+        setCommunityPosts(data.items || []);
+      }
+    } catch (error) {} finally {
+      setPostsLoading(false);
+    }
+  };
+
+  const handleLike = async (postId: number) => {
+    if (!currentUser?.id) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/community/posts/${postId}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id }),
+      });
+      if (response.ok) loadCommunityPosts();
+    } catch (error) {}
+  };
+
+  const loadRanking = async () => {
+    setRankingLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/community/ranking`);
+      if (response.ok) {
+        const data = await response.json();
+        setRankingData(data.items || []);
+        
+        // Sync points with header
+        const self = data.items.find((item: any) => item.id === currentUser?.id);
+        if (self) {
+          setCurrentUser((prev: any) => ({ ...prev, points: self.points }));
+        }
+      }
+    } catch (error) {
+      console.error('Error loading ranking:', error);
+    } finally {
+      setRankingLoading(false);
+    }
+  };
+
+  const handleCreatePost = async () => {
+    if (!newPostContent.trim() || !currentUser?.id) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/community/posts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, content: newPostContent }),
+      });
+      if (response.ok) {
+        setNewPostContent('');
+        loadCommunityPosts();
+        loadRanking();
+      }
+    } catch (error) {}
+  };
+
+  const openComments = async (post: any) => {
+    setSelectedPost(post);
+    setIsCommentModalOpen(true);
+    setReplyToComment(null);
+    loadComments(post.id);
+  };
+
+  const loadComments = async (postId: number) => {
+    try {
+      setCommentsLoading(true);
+      const url = `${API_BASE_URL}/api/community/posts/${postId}/comments?userId=${currentUser?.id || 0}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      setComments(data.items || []);
+    } catch (error) {
+      console.error('Error loading comments:', error);
+    } finally {
+      setCommentsLoading(false);
+    }
+  };
+
+  const handleAddComment = async () => {
+    if (!newComment.trim() || !selectedPost || !currentUser?.id) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/community/posts/${selectedPost.id}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userId: currentUser.id, 
+          content: newComment,
+          parentId: replyToComment?.id || null
+        }),
+      });
+      if (response.ok) {
+        setNewComment('');
+        setReplyToComment(null);
+        loadComments(selectedPost.id);
+        loadCommunityPosts();
+      }
+    } catch (error) {}
+  };
+
+  const handleLikeComment = async (comment: any) => {
+    if (!currentUser?.id) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/community/comments/${comment.id}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id }),
+      });
+      if (response.ok) {
+        loadComments(selectedPost.id);
+      }
+    } catch (error) {}
+  };
+
+  const confirmDeleteComment = (comment: any) => {
+    setCustomConfirm({
+      visible: true,
+      title: "Xóa bình luận",
+      message: "Bạn có chắc chắn muốn xóa bình luận này không?",
+      type: 'delete',
+      onConfirm: async () => {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/community/comments/${comment.id}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: currentUser.id }),
+          });
+          if (response.ok) {
+            loadComments(selectedPost.id);
+          }
+        } catch (error) {}
+      }
+    });
+  };
+
+  const confirmDeletePost = (post: any) => {
+    setCustomConfirm({
+      visible: true,
+      title: "Xác nhận xóa",
+      message: "Bạn có chắc chắn muốn xóa bài viết này không? Hành động này không thể hoàn tác.",
+      type: 'delete',
+      onConfirm: () => performDelete(post.id)
+    });
+    setActiveMenuPostId(null);
+  };
+
+  const performDelete = async (postId: number) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/community/posts/${postId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        loadCommunityPosts();
+        setActiveMenuPostId(null);
+      } else {
+        const msg = data.message || "Không thể xóa bài viết.";
+        if (Platform.OS === 'web') window.alert(msg);
+        else Alert.alert("Lỗi", msg);
+      }
+    } catch (error) {
+      if (Platform.OS === 'web') window.alert("Lỗi kết nối máy chủ.");
+      else Alert.alert("Lỗi kết nối", "Không thể kết nối đến máy chủ.");
+    }
+  };
+
+  const startEditPost = (post: any) => {
+    setEditingPost(post);
+    setEditingContent(post.content);
+    setIsEditPostModalOpen(true);
+    setActiveMenuPostId(null);
+  };
+
+  const handleUpdatePost = async () => {
+    if (!editingContent.trim() || !editingPost) return;
+    
+    setCustomConfirm({
+      visible: true,
+      title: "Cập nhật chia sẻ",
+      message: "Bạn muốn lưu lại nội dung mới cho bài viết này chứ?",
+      type: 'update',
+      onConfirm: () => performUpdate()
+    });
+  };
+
+  const performUpdate = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/community/posts/${editingPost.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, content: editingContent })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        loadCommunityPosts();
+        setIsEditPostModalOpen(false);
+        setEditingPost(null);
+      } else {
+        const msg = data.message || "Không thể cập nhật bài viết.";
+        if (Platform.OS === 'web') window.alert(msg);
+        else Alert.alert("Lỗi", msg);
+      }
+    } catch (error) {
+      if (Platform.OS === 'web') window.alert("Lỗi kết nối máy chủ.");
+      else Alert.alert("Lỗi kết nối", "Không thể kết nối đến máy chủ.");
+    }
+  };
+  // -------------------------
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
@@ -74,7 +347,7 @@ export default function HomeScreen() {
   const screenWidth = Dimensions.get('window').width;
   const chartWidth = screenWidth - 90;
 
-  useEffect(() => {
+  const fetchOnboarding = useCallback(() => {
     if (userEmail) {
       fetch(`${apiBaseUrl}/api/onboarding?email=${encodeURIComponent(userEmail)}`)
         .then(res => res.json())
@@ -84,6 +357,17 @@ export default function HomeScreen() {
         .catch(() => {});
     }
   }, [userEmail, apiBaseUrl]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchOnboarding();
+      loadTransactions();
+    }, [fetchOnboarding])
+  );
+
+  useEffect(() => {
+    fetchOnboarding();
+  }, [fetchOnboarding]);
   const months = useMemo(() => Array.from({ length: 12 }, (_, i) => i + 1), []);
   const { chartData, spendPercent, spendPercentRaw, fullLabels, dailyData, totalIncome, totalExpense, monthlyBudget } = useMemo(() => {
     const daysInMonth = new Date(selectedYear, selectedMonth, 0).getDate();
@@ -147,7 +431,8 @@ export default function HomeScreen() {
       return isSalary && d.getDate() <= 10;
     });
 
-    const incomeAmount = salaryTx ? Number(salaryTx.amount || 0) : 0;
+    // Use actual salary transaction if found, otherwise fallback to expected monthly income from onboarding
+    const incomeAmount = salaryTx ? Number(salaryTx.amount || 0) : Number(onboardingData?.incomeMonthly || 0);
     const needsPct = onboardingData?.needsPct ?? 50;
     const wantsPct = onboardingData?.wantsPct ?? 30;
     const BUDGET = (incomeAmount * (needsPct + wantsPct)) / 100;
@@ -219,6 +504,25 @@ export default function HomeScreen() {
     }),
     [chartLayout.width, fullLabels.length]
   );
+
+  // Trigger loads
+  useEffect(() => {
+    if (activeTab === 'community') {
+      loadCommunityPosts();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (communityTab === 'feed') {
+      loadCommunityPosts();
+    } else {
+      loadRanking();
+    }
+  }, [communityTab]);
+
+  useEffect(() => {
+    loadUserInfo();
+  }, [params.email]);
 
   const monthFilteredTransactions = useMemo(() => {
     return txItems.filter(tx => {
@@ -849,9 +1153,11 @@ export default function HomeScreen() {
           </View>
         </View>
         <View style={styles.headerRight}>
-          <View style={styles.pointsPill}>
-            <MaterialCommunityIcons name="star-four-points" size={16} color="#FBBF24" />
-            <Text style={styles.pointsText}>1250 điểm</Text>
+          <View style={styles.headerScore}>
+            <Ionicons name="star" size={14} color="#FBBF24" />
+            <Text style={styles.headerScoreText}>
+              {currentUser?.points || 1250} điểm
+            </Text>
           </View>
           <TouchableOpacity
             style={styles.settingsButton}
@@ -865,7 +1171,12 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      <ScrollView scrollEnabled={!isChartBusy} contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        style={activeTab === 'community' ? { display: 'none' } : {}}
+        scrollEnabled={!isChartBusy} 
+        contentContainerStyle={styles.container} 
+        showsVerticalScrollIndicator={false}
+      >
         {activeTab === 'home' && (
           <>
             <View style={styles.scoreCard}>
@@ -1132,7 +1443,7 @@ export default function HomeScreen() {
                   >
                     <View
                       style={[
-                        styles.categoryIcon,
+                        styles.categoryRowIcon,
                         { backgroundColor: `${row.meta.color}22` },
                       ]}
                     >
@@ -1246,17 +1557,7 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {activeTab === 'community' && (
-          <View style={styles.txSection}>
-            <View style={styles.placeholderCard}>
-              <Ionicons name="people" size={28} color="#0EA5E9" />
-              <Text style={styles.placeholderTitle}>Cộng đồng</Text>
-              <Text style={styles.placeholderText}>Tính năng này sẽ cập nhật sau.</Text>
-            </View>
-          </View>
-        )}
-
-        {activeTab === 'treasure' && (
+                {activeTab === 'treasure' && (
           <View style={styles.txSection}>
             <View style={styles.placeholderCard}>
               <Ionicons name="trophy" size={28} color="#0EA5E9" />
@@ -1266,6 +1567,202 @@ export default function HomeScreen() {
           </View>
         )}
       </ScrollView>
+      {activeTab === 'community' && (
+          <View style={[styles.communityContainer, { flex: 1 }]}>
+            <View style={styles.communitySubTabs}>
+              <TouchableOpacity 
+                style={[styles.communitySubTab, communityTab === 'feed' && styles.communitySubTabActive]}
+                onPress={() => setCommunityTab('feed')}
+              >
+                <Text style={[styles.communitySubTabText, communityTab === 'feed' && styles.communitySubTabTextActive]}>Bảng tin</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.communitySubTab, communityTab === 'ranking' && styles.communitySubTabActive]}
+                onPress={() => setCommunityTab('ranking')}
+              >
+                <Text style={[styles.communitySubTabText, communityTab === 'ranking' && styles.communitySubTabTextActive]}>Xếp hạng</Text>
+              </TouchableOpacity>
+            </View>
+
+            {communityTab === 'feed' ? (
+              <>
+                <View style={styles.createPostCard}>
+                  <View style={styles.avatarSmall}>
+                    <Text style={styles.avatarText}>{currentUser?.fullName?.substring(0, 2).toUpperCase() || 'BN'}</Text>
+                  </View>
+                  <TextInput
+                    style={styles.postInput}
+                    placeholder="Chia sẻ kinh nghiệm tài chính của bạn..."
+                    placeholderTextColor="#94A3B8"
+                    value={newPostContent}
+                    onChangeText={setNewPostContent}
+                    onSubmitEditing={handleCreatePost}
+                  />
+                  {newPostContent.trim().length > 0 && (
+                    <TouchableOpacity onPress={handleCreatePost}>
+                      <Ionicons name="send" size={20} color="#08B0C9" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                <ScrollView style={{flex: 1}} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+                  {postsLoading && <Text style={styles.txStatus}>Đang tải bảng tin...</Text>}
+                
+                {communityPosts.map((post) => (
+                  <View key={post.id} style={styles.postCard}>
+                    <View style={styles.postHeader}>
+                      <View style={[styles.avatarSmall, { backgroundColor: '#A855F7' }]}>
+                        <Text style={styles.avatarText}>{post.author_name?.substring(0, 2).toUpperCase() || 'MA'}</Text>
+                      </View>
+                      <View style={styles.postAuthorInfo}>
+                        <View style={styles.nameRow}>
+                          <Text style={styles.authorName}>{post.author_name}</Text>
+                          {post.likes_count > 20 && <MaterialCommunityIcons name="trophy-variant" size={14} color="#F59E0B" style={{marginLeft: 4}} />}
+                        </View>
+                        <Text style={styles.postTime}>{formatCommunityTime(post.created_at)}</Text>
+                      </View>
+                      
+                      {currentUser?.id === post.user_id && (
+                        <TouchableOpacity 
+                          onPress={() => {
+                            console.log('Menu button clicked for post:', post.id);
+                            setActiveMenuPostId(activeMenuPostId === post.id ? null : post.id);
+                          }}
+                          style={styles.postMoreBtn}
+                          hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                        >
+                          <MaterialCommunityIcons name="dots-vertical" size={20} color="#64748B" />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    
+                    {/* Post Menu - Placed here to ensure it's clickable and not clipped by header */}
+                    {activeMenuPostId === post.id && currentUser?.id === post.user_id && (
+                      <View style={styles.postMenu}>
+                        <TouchableOpacity 
+                          style={styles.postMenuItem} 
+                          onPress={() => {
+                            console.log('Edit clicked for post:', post.id);
+                            startEditPost(post);
+                          }}
+                          hitSlop={{ top: 10, bottom: 10, left: 20, right: 20 }}
+                        >
+                          <Ionicons name="create-outline" size={16} color="#0EA5E9" />
+                          <Text style={styles.postMenuText}>Sửa bài</Text>
+                        </TouchableOpacity>
+                        <View style={styles.menuDivider} />
+                        <TouchableOpacity 
+                          style={styles.postMenuItem} 
+                          onPress={() => {
+                            console.log('Delete clicked for post:', post.id);
+                            confirmDeletePost(post);
+                          }}
+                          hitSlop={{ top: 10, bottom: 10, left: 20, right: 20 }}
+                        >
+                          <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                          <Text style={[styles.postMenuText, {color: '#EF4444'}]}>Xóa bài</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    
+                    <Text style={styles.postContent}>{post.content}</Text>
+                    
+                    <View style={styles.postDivider} />
+                    
+                    <View style={styles.postActions}>
+                      <TouchableOpacity style={styles.postActionBtn} onPress={() => handleLike(post.id)}>
+                        <Ionicons name={post.is_liked ? "heart" : "heart-outline"} size={18} color={post.is_liked ? "#EF4444" : "#64748B"} />
+                        <Text style={styles.postActionText}>{post.likes_count || 0}</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity style={styles.postActionBtn} onPress={() => openComments(post)}>
+                        <Ionicons name="chatbubble-outline" size={18} color="#64748B" />
+                        <Text style={styles.postActionText}>{post.comments_count || 0}</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity style={styles.postActionBtn}>
+                        <Ionicons name="share-social-outline" size={18} color="#64748B" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+                </ScrollView>
+              </>
+            ) : (
+              <ScrollView style={styles.rankingContainer} showsVerticalScrollIndicator={false}>
+                <View style={styles.rankingHeaderCard}>
+                  <View style={styles.rankingHeaderTitleRow}>
+                    <Ionicons name="trophy-outline" size={24} color="#0810C9" />
+                    <Text style={styles.rankingHeaderTitle}>Bảng xếp hạng tháng {new Date().getMonth() + 1}</Text>
+                  </View>
+                  <Text style={styles.rankingHeaderDesc}>
+                    Hoàn thành mục tiêu, duy trì streak và tích lũy điểm để leo hạng!
+                  </Text>
+                </View>
+
+                {rankingLoading ? (
+                  <ActivityIndicator size="large" color="#08B0C9" style={{ marginTop: 40 }} />
+                ) : (
+                  rankingData.map((item, index) => (
+                    <View 
+                      key={item.id} 
+                      style={[
+                        styles.rankingItemCard,
+                        currentUser?.id === item.id && styles.rankingItemCardSelf
+                      ]}
+                    >
+                      <View style={styles.rankingRankBox}>
+                        {index < 3 ? (
+                          <MaterialCommunityIcons 
+                            name="medal" 
+                            size={32} 
+                            color={index === 0 ? "#FBBF24" : index === 1 ? "#94A3B8" : "#B45309"} 
+                          />
+                        ) : (
+                          <Text style={styles.rankingRankText}>#{index + 1}</Text>
+                        )}
+                      </View>
+
+                      <View style={[styles.avatarSmall, { backgroundColor: index === 0 ? '#FBBF24' : '#E2E8F0', width: 44, height: 44 }]}>
+                        <Text style={[styles.avatarText, { fontSize: 16 }]}>
+                          {item.full_name?.substring(0, 2).toUpperCase()}
+                        </Text>
+                      </View>
+
+                      <View style={styles.rankingInfo}>
+                        <Text style={[
+                          styles.rankingName,
+                          currentUser?.id === item.id && { color: '#22C55E' }
+                        ]}>
+                          {currentUser?.id === item.id ? 'Bạn' : item.full_name}
+                        </Text>
+                        <View style={styles.rankingStatsLine}>
+                          <View style={styles.rankingStat}>
+                            <MaterialCommunityIcons name="star-face" size={14} color="#64748B" />
+                            <Text style={styles.rankingStatValue}>{item.points} điểm</Text>
+                          </View>
+                          <View style={styles.rankingStat}>
+                            <MaterialCommunityIcons name="fire" size={14} color="#EF4444" />
+                            <Text style={styles.rankingStatValue}>{item.streak_count} ngày</Text>
+                          </View>
+                        </View>
+                      </View>
+
+                      {index < 3 && (
+                        <View style={[styles.topTag, { backgroundColor: index === 0 ? '#06B6D4' : '#0EA5E9' }]}>
+                          <Text style={styles.topTagText}>Top {index + 1}</Text>
+                        </View>
+                      )}
+                    </View>
+                  ))
+                )}
+                <View style={{ height: 100 }} />
+              </ScrollView>
+            )}
+          </View>
+        )}
+
+
 
       {isQuickAddOpen && (
         <View style={styles.overlay} pointerEvents="box-none">
@@ -2098,7 +2595,7 @@ export default function HomeScreen() {
                 <View style={styles.categoryModalTitleRow}>
                   <View
                     style={[
-                      styles.categoryIcon,
+                      styles.categoryRowIcon,
                       { backgroundColor: `${selectedCategoryMeta?.meta.color ?? '#64748B'}22` },
                     ]}
                   >
@@ -2155,6 +2652,248 @@ export default function HomeScreen() {
               </ScrollView>
             </View>
           </View>
+        </View>
+      )}
+
+      {customConfirm.visible && (
+        <View style={[styles.overlay, { zIndex: 10000 }]} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setCustomConfirm({ ...customConfirm, visible: false })} />
+          <View style={styles.customConfirmWrapper}>
+            <View style={styles.customConfirmBox}>
+              <View style={[styles.confirmIconBox, customConfirm.type === 'delete' ? { backgroundColor: '#FEE2E2' } : { backgroundColor: '#E0F2FE' }]}>
+                <Ionicons 
+                  name={customConfirm.type === 'delete' ? "trash" : "checkmark-circle"} 
+                  size={28} 
+                  color={customConfirm.type === 'delete' ? "#EF4444" : "#0EA5E9"} 
+                />
+              </View>
+              <Text style={styles.confirmTitle}>{customConfirm.title}</Text>
+              <Text style={styles.confirmMessage}>{customConfirm.message}</Text>
+              <View style={styles.confirmActions}>
+                <TouchableOpacity 
+                  style={styles.confirmCancelBtn} 
+                  onPress={() => setCustomConfirm({ ...customConfirm, visible: false })}
+                >
+                  <Text style={styles.confirmCancelText}>Hủy</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.confirmYesBtn, customConfirm.type === 'delete' ? { backgroundColor: '#EF4444' } : { backgroundColor: '#0EA5E9' }]}
+                  onPress={() => {
+                    customConfirm.onConfirm();
+                    setCustomConfirm({ ...customConfirm, visible: false });
+                  }}
+                >
+                  <Text style={styles.confirmYesText}>Đồng ý</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {isEditPostModalOpen && (
+        <View style={[styles.overlay, { zIndex: 3000 }]} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsEditPostModalOpen(false)} />
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+            style={styles.editPostModalWrapper}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
+          >
+            <View style={styles.editPostModal}>
+              <View style={styles.editPostHeader}>
+                <Text style={styles.editPostTitle}>Chỉnh sửa bài viết</Text>
+                <TouchableOpacity onPress={() => setIsEditPostModalOpen(false)}>
+                  <Ionicons name="close" size={24} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.editPostInput}
+                value={editingContent}
+                onChangeText={setEditingContent}
+                multiline
+                placeholder="Bạn đang nghĩ gì?"
+                autoFocus
+              />
+              <TouchableOpacity style={styles.updatePostBtn} onPress={handleUpdatePost}>
+                <Text style={styles.updatePostBtnText}>Cập nhật chia sẻ</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      )}
+
+      {isCommentModalOpen && selectedPost && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsCommentModalOpen(false)} />
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.commentModalWrapper}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
+          >
+            <View style={styles.commentModal}>
+              <View style={styles.commentHeader}>
+                <Text style={styles.commentTitle}>Bình luận</Text>
+                <TouchableOpacity onPress={() => setIsCommentModalOpen(false)}>
+                  <Ionicons name="close" size={24} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={styles.commentList}>
+                {commentsLoading ? (
+                  <Text style={styles.commentStatus}>Đang tải bình luận...</Text>
+                ) : comments.length === 0 ? (
+                  <Text style={styles.commentStatus}>Chưa có bình luận nào. Hãy là người đầu tiên!</Text>
+                ) : (
+                  comments.filter(c => !c.parent_id).map((comment) => {
+                    const replies = comments.filter(r => r.parent_id === comment.id);
+                    const isExpanded = expandedComments.includes(comment.id);
+
+                    return (
+                      <View key={comment.id} style={styles.commentThreadWrapper}>
+                        <View style={styles.commentItem}>
+                          <View style={[styles.avatarSmall, { width: 30, height: 30 }]}>
+                            <Text style={[styles.avatarText, { fontSize: 10 }]}>{comment.author_name?.substring(0, 2).toUpperCase()}</Text>
+                          </View>
+                          <View style={styles.commentContentBox}>
+                            <Text style={styles.commentAuthor}>{comment.author_name}</Text>
+                            <Text style={styles.commentText}>{comment.content}</Text>
+                            
+                            <View style={styles.commentActions}>
+                              <TouchableOpacity 
+                                style={styles.comActionBtn}
+                                onPress={() => handleLikeComment(comment)}
+                              >
+                                <Ionicons 
+                                  name={comment.is_liked ? "heart" : "heart-outline"} 
+                                  size={14} 
+                                  color={comment.is_liked ? "#EF4444" : "#64748B"} 
+                                />
+                                <Text style={[styles.comActionText, comment.is_liked && { color: "#EF4444" }]}>
+                                  {comment.likes_count > 0 ? comment.likes_count : "Thích"}
+                                </Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity 
+                                style={styles.comActionBtn}
+                                onPress={() => {
+                                  setReplyToComment(comment);
+                                  setNewComment(`@${comment.author_name} `);
+                                }}
+                              >
+                                <MaterialCommunityIcons name="reply" size={14} color="#64748B" />
+                                <Text style={styles.comActionText}>Trả lời</Text>
+                              </TouchableOpacity>
+
+                              {currentUser?.id === comment.user_id && (
+                                <TouchableOpacity 
+                                  style={styles.comActionBtn}
+                                  onPress={() => confirmDeleteComment(comment)}
+                                >
+                                  <Ionicons name="trash-outline" size={14} color="#EF4444" />
+                                  <Text style={[styles.comActionText, { color: "#EF4444" }]}>Xóa</Text>
+                                </TouchableOpacity>
+                              )}
+                              
+                              <Text style={styles.commentTime}>{formatCommunityTime(comment.created_at)}</Text>
+                            </View>
+
+                            {/* Show Replies Link */}
+                            {replies.length > 0 && (
+                              <TouchableOpacity 
+                                style={styles.showRepliesBtn}
+                                onPress={() => {
+                                  if (isExpanded) {
+                                    setExpandedComments(expandedComments.filter(id => id !== comment.id));
+                                  } else {
+                                    setExpandedComments([...expandedComments, comment.id]);
+                                  }
+                                }}
+                              >
+                                <View style={styles.repliesLine} />
+                                <Text style={styles.showRepliesText}>
+                                  {isExpanded ? 'Ẩn phản hồi' : `Xem ${replies.length} phản hồi`}
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                        </View>
+
+                        {/* Render Replies */}
+                        {isExpanded && replies.map(reply => (
+                          <View key={reply.id} style={[styles.commentItem, styles.replyItem]}>
+                            <View style={[styles.avatarSmall, { width: 24, height: 24 }]}>
+                              <Text style={[styles.avatarText, { fontSize: 8 }]}>{reply.author_name?.substring(0, 2).toUpperCase()}</Text>
+                            </View>
+                            <View style={styles.commentContentBox}>
+                              <Text style={styles.commentAuthor}>{reply.author_name}</Text>
+                              <Text style={styles.commentText}>{reply.content}</Text>
+                              
+                              <View style={styles.commentActions}>
+                                <TouchableOpacity 
+                                  style={styles.comActionBtn}
+                                  onPress={() => handleLikeComment(reply)}
+                                >
+                                  <Ionicons 
+                                    name={reply.is_liked ? "heart" : "heart-outline"} 
+                                    size={12} 
+                                    color={reply.is_liked ? "#EF4444" : "#64748B"} 
+                                  />
+                                  <Text style={[styles.comActionText, reply.is_liked && { color: "#EF4444" }]}>
+                                    {reply.likes_count > 0 ? reply.likes_count : "Thích"}
+                                  </Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity 
+                                  style={styles.comActionBtn}
+                                  onPress={() => {
+                                    setReplyToComment(comment); // Always reply to main comment thread or handle nested
+                                    setNewComment(`@${reply.author_name} `);
+                                  }}
+                                >
+                                  <MaterialCommunityIcons name="reply" size={12} color="#64748B" />
+                                  <Text style={styles.comActionText}>Trả lời</Text>
+                                </TouchableOpacity>
+
+                                {currentUser?.id === reply.user_id && (
+                                  <TouchableOpacity 
+                                    style={styles.comActionBtn}
+                                    onPress={() => confirmDeleteComment(reply)}
+                                  >
+                                    <Ionicons name="trash-outline" size={12} color="#EF4444" />
+                                    <Text style={[styles.comActionText, { color: "#EF4444" }]}>Xóa</Text>
+                                  </TouchableOpacity>
+                                )}
+                                
+                                <Text style={styles.commentTime}>{formatCommunityTime(reply.created_at)}</Text>
+                              </View>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    );
+                  })
+                )}
+              </ScrollView>
+
+              <View style={styles.commentInputRow}>
+                <TextInput
+                  style={styles.commentInput}
+                  placeholder="Viết bình luận..."
+                  placeholderTextColor="#94A3B8"
+                  value={newComment}
+                  onChangeText={setNewComment}
+                  multiline
+                />
+                <TouchableOpacity 
+                  style={[styles.sendCommentBtn, !newComment.trim() && { opacity: 0.5 }]} 
+                  onPress={handleAddComment}
+                  disabled={!newComment.trim()}
+                >
+                  <Ionicons name="send" size={18} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
         </View>
       )}
 
@@ -2232,6 +2971,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#07B8C8',
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,
+  },
+  headerScore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+  },
+  headerScoreText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
   },
   headerLeft: {
     flexDirection: 'row',
@@ -3411,7 +4164,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
-  categoryIcon: {
+  categoryRowIcon: {
     width: 30,
     height: 30,
     borderRadius: 10,
@@ -3961,7 +4714,7 @@ const styles = StyleSheet.create({
   },
   deleteModal: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
+    borderRadius: 18,
     padding: 18,
     alignItems: 'center',
     gap: 8,
@@ -3986,9 +4739,10 @@ const styles = StyleSheet.create({
     }),
   },
   deleteText: {
-    fontSize: 12,
+    fontSize: 14,
     color: '#64748B',
     textAlign: 'center',
+    lineHeight: 20,
     fontFamily: Platform.select({
       ios: 'AvenirNext-Regular',
       android: 'sans-serif',
@@ -3996,22 +4750,21 @@ const styles = StyleSheet.create({
     }),
   },
   deleteActions: {
-    marginTop: 8,
     flexDirection: 'row',
-    gap: 10,
+    gap: 12,
+    width: '100%',
+    marginTop: 12,
   },
   deleteCancel: {
     flex: 1,
+    paddingVertical: 12,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingVertical: 10,
+    backgroundColor: '#F1F5F9',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
   },
   deleteCancelText: {
-    fontSize: 13,
-    color: '#0F172A',
+    fontSize: 14,
+    color: '#64748B',
     fontFamily: Platform.select({
       ios: 'AvenirNext-Medium',
       android: 'sans-serif-medium',
@@ -4020,14 +4773,660 @@ const styles = StyleSheet.create({
   },
   deleteConfirm: {
     flex: 1,
+    paddingVertical: 12,
     borderRadius: 12,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+  },
+  deleteConfirmText: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  communityContainer: {
+    paddingHorizontal: 20,
+    marginTop: 10,
+    gap: 12,
+    paddingBottom: 20,
+  },
+  communitySubTabs: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 18,
+    padding: 4,
+    marginBottom: 8,
+  },
+  communitySubTab: {
+    flex: 1,
     paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 14,
+  },
+  communitySubTabActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  communitySubTabText: {
+    fontSize: 13,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  communitySubTabTextActive: {
+    color: '#08B0C9',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  createPostCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 6,
+  },
+  avatarSmall: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#0EA5E9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  postInput: {
+    flex: 1,
+    height: 40,
+    fontSize: 14,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  postCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 18,
+    marginBottom: 6,
+  },
+  postHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  postAuthorInfo: {
+    flex: 1,
+  },
+  authorName: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  postTime: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 2,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  postContent: {
+    fontSize: 14,
+    color: '#334155',
+    lineHeight: 22,
+    marginBottom: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  postDivider: {
+    height: 1,
+    backgroundColor: '#F1F5F9',
+    marginBottom: 12,
+  },
+  postActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  postActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  postActionText: {
+    fontSize: 13,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  // Comment Modal Styles
+  commentModalWrapper: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  commentModal: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 20,
+    height: '80%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 20,
+  },
+  commentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  commentTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  commentList: {
+    flex: 1,
+  },
+  commentStatus: {
+    textAlign: 'center',
+    color: '#94A3B8',
+    marginTop: 20,
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  commentItem: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  commentContentBox: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 18,
+    padding: 12,
+  },
+  commentAuthor: {
+    fontSize: 13,
+    color: '#0F172A',
+    marginBottom: 4,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  commentText: {
+    fontSize: 14,
+    color: '#475569',
+    lineHeight: 20,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  commentTime: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginLeft: 'auto',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  commentActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    gap: 16,
+  },
+  comActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  comActionText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  commentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'android' ? 15 : 0, // Đẩy lên 15px khi chạm mép bàn phím Android
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  commentInput: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    maxHeight: 100,
+    fontSize: 14,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  sendCommentBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#08B0C9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  replyItem: {
+    marginLeft: 46,
+    borderLeftWidth: 1,
+    borderLeftColor: '#E2E8F0',
+    paddingLeft: 12,
+    marginTop: 8,
+  },
+  showRepliesBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingVertical: 4,
+  },
+  repliesLine: {
+    width: 20,
+    height: 1,
+    backgroundColor: '#CBD5E1',
+    marginRight: 8,
+  },
+  showRepliesText: {
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  commentThreadWrapper: {
+    marginBottom: 16,
+  },
+  postMoreBtn: {
+    padding: 10,
+    marginRight: -10,
+    marginTop: -10,
+  },
+  postMenu: {
+    position: 'absolute',
+    right: 16,
+    top: 50,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 4,
+    width: 140,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 10,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    zIndex: 9999,
+  },
+  postMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+  },
+  postMenuText: {
+    fontSize: 13,
+    color: '#334155',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: '#F1F5F9',
+    marginHorizontal: 8,
+  },
+  editPostModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 20,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  editPostModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 20,
+    gap: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  editPostHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  editPostTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  editPostInput: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 18,
+    padding: 16,
+    minHeight: 120,
+    fontSize: 15,
+    color: '#0F172A',
+    textAlignVertical: 'top',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  updatePostBtn: {
+    backgroundColor: '#08B0C9',
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  updatePostBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  // Custom Confirm Popup Styles
+  customConfirmWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  customConfirmBox: {
+    width: '90%',
+    maxWidth: 340,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.1,
+    shadowRadius: 15,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  confirmIconBox: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    backgroundColor: '#F8FAFC',
+  },
+  confirmTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    marginBottom: 8,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  confirmMessage: {
+    fontSize: 14,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 24,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  confirmCancelText: {
+    fontSize: 14,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  confirmYesBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
     alignItems: 'center',
     backgroundColor: '#08B0C9',
   },
-  deleteConfirmText: {
-    fontSize: 13,
+  confirmYesText: {
+    fontSize: 14,
     color: '#FFFFFF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  // Ranking Styles
+  rankingContainer: {
+    padding: 20,
+  },
+  rankingHeaderCard: {
+    backgroundColor: '#ECFEFF',
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#CFFAFE',
+  },
+  rankingHeaderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  rankingHeaderTitle: {
+    fontSize: 16,
+    color: '#164E63',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  rankingHeaderDesc: {
+    fontSize: 12,
+    color: '#0891B2',
+    lineHeight: 18,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  rankingItemCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 16,
+    paddingHorizontal: 12, // Dịch toàn bộ content sang trái bằng cách giảm padding
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    elevation: 2,
+  },
+  rankingItemCardSelf: {
+    borderColor: '#08B0C9',
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+  },
+  rankingRankBox: {
+    width: 32, // Tối ưu chiều rộng để huy chương gọn hơn
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6, // Thu nhỏ khoảng cách giữa huy chương và avatar
+  },
+  rankingRankText: {
+    fontSize: 14,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  rankingInfo: {
+    flex: 1,
+    marginLeft: 10, // Kéo phần text dịch sang trái (gần avatar hơn)
+  },
+  rankingName: {
+    fontSize: 14,
+    color: '#0F172A',
+    marginBottom: 4,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  rankingStatsLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  rankingStat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  rankingStatValue: {
+    fontSize: 12,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  topTag: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  topTagText: {
+    color: '#FFFFFF',
+    fontSize: 11,
     fontFamily: Platform.select({
       ios: 'AvenirNext-DemiBold',
       android: 'sans-serif-medium',

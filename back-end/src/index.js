@@ -26,61 +26,153 @@ const ensureDbConnection = async () => {
   }
 };
 
-await ensureDbConnection();
+const initDb = async () => {
+  try {
+    await ensureDbConnection();
 
-await pool.execute(`
-  CREATE TABLE IF NOT EXISTS user_onboarding (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL UNIQUE,
-    income_monthly BIGINT NOT NULL,
-    ai_name VARCHAR(100) NOT NULL,
-    ai_tone VARCHAR(30) NOT NULL,
-    needs_pct INT NOT NULL,
-    wants_pct INT NOT NULL,
-    savings_pct INT NOT NULL,
-    auth_method VARCHAR(30) NOT NULL,
-    mfa_enabled TINYINT(1) NOT NULL,
-    pin_hash VARCHAR(255),
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL,
-    CONSTRAINT fk_onboarding_user FOREIGN KEY (user_id)
-      REFERENCES users(id) ON DELETE CASCADE
-  )
-`);
+    // 1. Users table first (base table for everything else)
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        full_name VARCHAR(255) NOT NULL,
+        phone VARCHAR(20) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        avatar_url TEXT,
+        points INT DEFAULT 1250,
+        streak_count INT DEFAULT 0,
+        last_post_date DATE DEFAULT NULL,
+        created_at DATETIME NOT NULL
+      )
+    `);
 
-await pool.execute(`
-  CREATE TABLE IF NOT EXISTS user_goals (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    goal_code VARCHAR(50) NOT NULL,
-    created_at DATETIME NOT NULL,
-    UNIQUE KEY uq_user_goal (user_id, goal_code),
-    CONSTRAINT fk_goal_user FOREIGN KEY (user_id)
-      REFERENCES users(id) ON DELETE CASCADE
-  )
-`);
+    // 2. Dependent tables
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS user_onboarding (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL UNIQUE,
+        income_monthly BIGINT NOT NULL,
+        ai_name VARCHAR(100) NOT NULL,
+        ai_tone VARCHAR(30) NOT NULL,
+        needs_pct INT NOT NULL,
+        wants_pct INT NOT NULL,
+        savings_pct INT NOT NULL,
+        auth_method VARCHAR(30) NOT NULL,
+        mfa_enabled TINYINT(1) NOT NULL,
+        pin_hash VARCHAR(255),
+        created_at DATETIME,
+        updated_at DATETIME NOT NULL,
+        CONSTRAINT fk_onboarding_user FOREIGN KEY (user_id)
+          REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
 
-await pool.execute(`
-  CREATE TABLE IF NOT EXISTS user_transactions (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    type ENUM('expense','income') NOT NULL DEFAULT 'expense',
-    amount BIGINT NOT NULL DEFAULT 0,
-    description VARCHAR(255),
-    category VARCHAR(50),
-    source VARCHAR(30) NOT NULL DEFAULT 'manual',
-    ai_category VARCHAR(50),
-    ai_confidence DECIMAL(5,2),
-    raw_text TEXT,
-    attachment_url TEXT,
-    occurred_at DATETIME NOT NULL,
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL,
-    INDEX idx_user_date (user_id, occurred_at),
-    CONSTRAINT fk_tx_user FOREIGN KEY (user_id)
-      REFERENCES users(id) ON DELETE CASCADE
-  )
-`);
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS user_goals (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        goal_code VARCHAR(50) NOT NULL,
+        created_at DATETIME NOT NULL,
+        UNIQUE KEY uq_user_goal (user_id, goal_code),
+        CONSTRAINT fk_goal_user FOREIGN KEY (user_id)
+          REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS user_transactions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        type ENUM('expense','income') NOT NULL DEFAULT 'expense',
+        amount BIGINT NOT NULL DEFAULT 0,
+        description VARCHAR(255),
+        category VARCHAR(50),
+        source VARCHAR(30) NOT NULL DEFAULT 'manual',
+        ai_category VARCHAR(50),
+        ai_confidence DECIMAL(5,2),
+        raw_text TEXT,
+        attachment_url TEXT,
+        occurred_at DATETIME NOT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        INDEX idx_user_date (user_id, occurred_at),
+        CONSTRAINT fk_tx_user FOREIGN KEY (user_id)
+          REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS community_posts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        content TEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        CONSTRAINT fk_post_user FOREIGN KEY (user_id)
+          REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS community_likes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        post_id INT NOT NULL,
+        created_at DATETIME NOT NULL,
+        UNIQUE KEY uq_user_post_like (user_id, post_id),
+        CONSTRAINT fk_like_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_like_post FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE
+      )
+    `);
+
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS community_comments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        post_id INT NOT NULL,
+        content TEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        parent_id INT DEFAULT NULL,
+        CONSTRAINT fk_comment_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_comment_post FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+        CONSTRAINT fk_comment_parent FOREIGN KEY (parent_id) REFERENCES community_comments(id) ON DELETE CASCADE
+      )
+    `);
+
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS community_comment_likes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        comment_id INT NOT NULL,
+        created_at DATETIME,
+        CONSTRAINT fk_com_like_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_com_like_comment FOREIGN KEY (comment_id) REFERENCES community_comments(id) ON DELETE CASCADE,
+        UNIQUE KEY unique_user_comment (user_id, comment_id)
+      )
+    `);
+
+    // 3. Retroactive streak update (safe catch)
+    try {
+      await pool.execute(`
+        UPDATE users 
+        SET streak_count = 1, last_post_date = CURDATE() 
+        WHERE (streak_count = 0 OR streak_count IS NULL) AND id IN (
+          SELECT user_id FROM (
+            SELECT DISTINCT user_id FROM community_posts WHERE DATE(created_at) = CURDATE()
+          ) as tmp
+        )
+      `);
+    } catch (e) {
+      // Silence error here as it might fail if tables are brand new
+    }
+
+    console.log('Database initialized successfully.');
+  } catch (err) {
+    console.error('Database initialization failed:', err);
+  }
+};
+
+await initDb();
 
 const normalizeEmail = (email) => email.trim().toLowerCase();
 const normalizePhone = (phone) => phone.replace(/[\s\-().]/g, '');
@@ -517,7 +609,9 @@ app.get('/api/onboarding', async (req, res) => {
 
     return res.json({
       exists: true,
+      userId: user.id,
       user: {
+        id: user.id,
         email: user.email,
         fullName: user.full_name,
         phone: user.phone,
@@ -757,6 +851,260 @@ app.delete('/api/transactions/:id', async (req, res) => {
     }
 
     return res.json({ message: 'Đã xóa giao dịch.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+// Community APIs
+app.get('/api/community/posts', async (req, res) => {
+  try {
+    const userId = Number(req.query.userId); // Optional: to check if the current user liked the post
+    const [posts] = await pool.execute(`
+      SELECT 
+        p.id, p.user_id, p.content, p.created_at,
+        u.full_name as author_name,
+        u.avatar_url,
+        (SELECT COUNT(*) FROM community_likes WHERE post_id = p.id) as likes_count,
+        (SELECT COUNT(*) FROM community_comments WHERE post_id = p.id) as comments_count,
+        EXISTS(SELECT 1 FROM community_likes WHERE post_id = p.id AND user_id = ?) as is_liked
+      FROM community_posts p
+      JOIN users u ON p.user_id = u.id
+      ORDER BY p.created_at DESC
+    `, [userId || 0]);
+
+    return res.json({ items: posts });
+  } catch (error) {
+    console.error('Fetch posts error:', error);
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.post('/api/community/posts', async (req, res) => {
+  try {
+    const { userId, content } = req.body;
+    if (!userId || !content) {
+      return res.status(400).json({ message: 'Thiếu thông tin người dùng hoặc nội dung.' });
+    }
+    const [result] = await pool.execute(
+      'INSERT INTO community_posts (user_id, content, created_at, updated_at) VALUES (?, ?, NOW(), NOW())',
+      [userId, content]
+    );
+
+    // Streak and Points Logic
+    const [user] = await pool.execute('SELECT streak_count, last_post_date, points FROM users WHERE id = ?', [userId]);
+    if (user.length > 0) {
+      const lastDate = user[0].last_post_date ? new Date(user[0].last_post_date) : null;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      let newStreak = 1;
+      let pointsToAdd = 0;
+
+      if (lastDate) {
+        lastDate.setHours(0, 0, 0, 0);
+        const diffTime = today.getTime() - lastDate.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (diffDays === 1) {
+          newStreak = user[0].streak_count + 1;
+          pointsToAdd = 10;
+        } else if (diffDays === 0) {
+          newStreak = user[0].streak_count; // Already posted today
+          pointsToAdd = 0; // No points for multiple posts today
+        } else {
+          // Missed days
+          newStreak = 1;
+          pointsToAdd = 10;
+        }
+      } else {
+        // First post ever
+        newStreak = 1;
+        pointsToAdd = 10;
+      }
+
+      await pool.execute(
+        'UPDATE users SET streak_count = ?, last_post_date = CURDATE(), points = points + ? WHERE id = ?',
+        [newStreak, pointsToAdd, userId]
+      );
+    }
+
+    return res.status(201).json({ message: 'Đăng bài thành công.', id: result.insertId });
+  } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.put('/api/community/posts/:id', async (req, res) => {
+  try {
+    const postId = Number(req.params.id);
+    const { userId, content } = req.body;
+    console.log('Update post requested:', { postId, userId, contentLength: content?.length });
+    if (!userId || !content) return res.status(400).json({ message: 'Thiếu thông tin.' });
+
+    // Verify ownership
+    const [posts] = await pool.execute('SELECT user_id FROM community_posts WHERE id = ?', [postId]);
+    if (posts.length === 0) return res.status(404).json({ message: 'Không tìm thấy bài viết.' });
+    if (posts[0].user_id !== userId) {
+      console.warn('Unauthorized update attempt:', { owner: posts[0].user_id, requester: userId });
+      return res.status(403).json({ message: 'Bạn không có quyền sửa bài này.' });
+    }
+
+    await pool.execute(
+      'UPDATE community_posts SET content = ?, updated_at = NOW() WHERE id = ?',
+      [content, postId]
+    );
+    console.log('Post updated successfully:', postId);
+    return res.json({ message: 'Cập nhật thành công.' });
+  } catch (error) {
+    console.error('Update post error:', error);
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.get('/api/community/ranking', async (req, res) => {
+  try {
+    // Reset streaks for and everyone who missed a day
+    await pool.execute(`
+      UPDATE users 
+      SET streak_count = 0 
+      WHERE last_post_date IS NOT NULL AND DATEDIFF(CURDATE(), last_post_date) > 1
+    `);
+
+    const [ranking] = await pool.execute(`
+      SELECT id, full_name, avatar_url, points, streak_count 
+      FROM users 
+      ORDER BY streak_count DESC, points DESC 
+      LIMIT 6
+    `);
+    return res.json({ items: ranking });
+  } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.delete('/api/community/posts/:id', async (req, res) => {
+  try {
+    const postId = Number(req.params.id);
+    const { userId } = req.body;
+    console.log('Delete post requested:', { postId, userId });
+    if (!userId) return res.status(400).json({ message: 'Thiếu thông tin.' });
+
+    // Verify ownership
+    const [posts] = await pool.execute('SELECT user_id FROM community_posts WHERE id = ?', [postId]);
+    if (posts.length === 0) return res.status(404).json({ message: 'Không tìm thấy bài viết.' });
+    if (posts[0].user_id !== userId) {
+      console.warn('Unauthorized delete attempt:', { owner: posts[0].user_id, requester: userId });
+      return res.status(403).json({ message: 'Bạn không có quyền xóa bài này.' });
+    }
+
+    await pool.execute('DELETE FROM community_posts WHERE id = ?', [postId]);
+    console.log('Post deleted successfully:', postId);
+    return res.json({ message: 'Xóa bài thành công.' });
+  } catch (error) {
+    console.error('Delete post error:', error);
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.post('/api/community/posts/:id/like', async (req, res) => {
+  try {
+    const postId = Number(req.params.id);
+    const { userId } = req.body;
+    if (!userId) return res.status(401).json({ message: 'Yêu cầu đăng nhập.' });
+
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    
+    // Check if already liked
+    const [existing] = await pool.execute(
+      'SELECT id FROM community_likes WHERE user_id = ? AND post_id = ?',
+      [userId, postId]
+    );
+
+    if (existing.length > 0) {
+      // Unlike
+      await pool.execute('DELETE FROM community_likes WHERE user_id = ? AND post_id = ?', [userId, postId]);
+      return res.json({ message: 'Đã bỏ thích.', liked: false });
+    } else {
+      // Like
+      await pool.execute('INSERT INTO community_likes (user_id, post_id, created_at) VALUES (?, ?, NOW())', [userId, postId]);
+      return res.json({ message: 'Đã thích.', liked: true });
+    }
+  } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.get('/api/community/posts/:id/comments', async (req, res) => {
+  try {
+    const postId = Number(req.params.id);
+    const userId = Number(req.query.userId) || 0;
+    const [comments] = await pool.execute(`
+      SELECT 
+        c.id, c.user_id, c.content, c.created_at, c.parent_id,
+        u.full_name as author_name,
+        (SELECT COUNT(*) FROM community_comment_likes WHERE comment_id = c.id) as likes_count,
+        EXISTS(SELECT 1 FROM community_comment_likes WHERE comment_id = c.id AND user_id = ?) as is_liked
+      FROM community_comments c
+      JOIN users u ON c.user_id = u.id
+      WHERE c.post_id = ?
+      ORDER BY c.created_at ASC
+    `, [userId, postId]);
+
+    return res.json({ items: comments });
+  } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.post('/api/community/posts/:id/comments', async (req, res) => {
+  try {
+    const postId = Number(req.params.id);
+    const { userId, content } = req.body;
+    const parentId = req.body.parentId || null;
+    await pool.execute(
+      'INSERT INTO community_comments (user_id, post_id, content, parent_id, created_at) VALUES (?, ?, ?, ?, NOW())',
+      [userId, postId, content, parentId]
+    );
+    return res.status(201).json({ message: 'Đã bình luận.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.delete('/api/community/comments/:id', async (req, res) => {
+  try {
+    const commentId = Number(req.params.id);
+    const { userId } = req.body;
+    const [existing] = await pool.execute('SELECT user_id FROM community_comments WHERE id = ?', [commentId]);
+    if (existing.length === 0) return res.status(404).json({ message: 'Không thấy bình luận.' });
+    if (existing[0].user_id !== userId) return res.status(403).json({ message: 'Không có quyền xóa.' });
+
+    await pool.execute('DELETE FROM community_comments WHERE id = ?', [commentId]);
+    return res.json({ message: 'Đã xóa bình luận.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.post('/api/community/comments/:id/like', async (req, res) => {
+  try {
+    const commentId = Number(req.params.id);
+    const { userId } = req.body;
+    if (!userId) return res.status(401).json({ message: 'Yêu cầu đăng nhập.' });
+
+    const [existing] = await pool.execute(
+      'SELECT id FROM community_comment_likes WHERE user_id = ? AND comment_id = ?',
+      [userId, commentId]
+    );
+
+    if (existing.length > 0) {
+      await pool.execute('DELETE FROM community_comment_likes WHERE user_id = ? AND comment_id = ?', [userId, commentId]);
+      return res.json({ message: 'Bỏ thích.', liked: false });
+    } else {
+      await pool.execute('INSERT INTO community_comment_likes (user_id, comment_id, created_at) VALUES (?, ?, NOW())', [userId, commentId]);
+      return res.json({ message: 'Thích.', liked: true });
+    }
   } catch (error) {
     return res.status(500).json({ message: 'Lỗi máy chủ.' });
   }
