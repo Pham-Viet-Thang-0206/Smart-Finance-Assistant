@@ -151,19 +151,27 @@ const initDb = async () => {
       )
     `);
 
-    // 3. Retroactive streak update (safe catch)
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS savings_goals (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        icon VARCHAR(50) NOT NULL,
+        target_amount DECIMAL(18, 2) NOT NULL,
+        current_amount DECIMAL(18, 2) DEFAULT 0,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        CONSTRAINT fk_savings_goal_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    // 3. Migration: Add goal_id to user_transactions
     try {
-      await pool.execute(`
-        UPDATE users 
-        SET streak_count = 1, last_post_date = CURDATE() 
-        WHERE (streak_count = 0 OR streak_count IS NULL) AND id IN (
-          SELECT user_id FROM (
-            SELECT DISTINCT user_id FROM community_posts WHERE DATE(created_at) = CURDATE()
-          ) as tmp
-        )
-      `);
+      await pool.execute('ALTER TABLE user_transactions ADD COLUMN goal_id INT DEFAULT NULL');
     } catch (e) {
-      // Silence error here as it might fail if tables are brand new
+      // Column already exists
     }
 
     console.log('Database initialized successfully.');
@@ -841,6 +849,21 @@ app.delete('/api/transactions/:id', async (req, res) => {
       return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
     }
 
+    // 1. Get transaction info to check for goal link
+    const [transactions] = await pool.execute(
+      'SELECT amount, goal_id FROM user_transactions WHERE id = ? AND user_id = ?',
+      [id, user.id]
+    );
+    const trans = transactions?.[0];
+
+    // 2. If it's a goal-linked transaction, subtract from goal
+    if (trans && trans.goal_id) {
+       await pool.execute(
+         'UPDATE savings_goals SET current_amount = current_amount - ?, updated_at = NOW() WHERE id = ?',
+         [trans.amount, trans.goal_id]
+       );
+    }
+
     const [result] = await pool.execute(
       'DELETE FROM user_transactions WHERE id = ? AND user_id = ?',
       [id, user.id]
@@ -852,6 +875,113 @@ app.delete('/api/transactions/:id', async (req, res) => {
 
     return res.json({ message: 'Đã xóa giao dịch.' });
   } catch (error) {
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+// Savings Goals APIs
+app.get('/api/savings-goals', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) return res.status(400).json({ message: 'Email là bắt buộc.' });
+    const normalizedEmail = normalizeEmail(String(email));
+    const [users] = await pool.execute('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
+    const user = users?.[0];
+    if (!user) return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
+
+    const [rows] = await pool.execute(
+      'SELECT id, name, icon, CAST(target_amount AS DOUBLE) as target_amount, CAST(current_amount AS DOUBLE) as current_amount, start_date, end_date FROM savings_goals WHERE user_id = ? ORDER BY created_at DESC',
+      [user.id]
+    );
+    return res.json(rows);
+  } catch (error) {
+    console.error('GET goals error:', error);
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.post('/api/savings-goals', async (req, res) => {
+  try {
+    const { email, name, icon, targetAmount, currentAmount, startDate, endDate } = req.body;
+    if (!email || !name || !targetAmount || !startDate || !endDate) {
+      return res.status(400).json({ message: 'Vui lòng nhập đầy đủ thông tin bắt buộc.' });
+    }
+    const normalizedEmail = normalizeEmail(String(email));
+    const [users] = await pool.execute('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
+    const user = users?.[0];
+    if (!user) return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
+
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const [result] = await pool.execute(
+      `INSERT INTO savings_goals (user_id, name, icon, target_amount, current_amount, start_date, end_date, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [user.id, name, icon || '🎯', targetAmount, currentAmount || 0, startDate, endDate, now, now]
+    );
+    return res.status(201).json({ id: result.insertId, message: 'Thêm mục tiêu thành công.' });
+  } catch (error) {
+    console.error('POST goals error:', error);
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.delete('/api/savings-goals/:id', async (req, res) => {
+  try {
+    const email = req.query.email;
+    const id = req.params.id;
+    if (!email) return res.status(400).json({ message: 'Email là bắt buộc.' });
+    const normalizedEmail = normalizeEmail(String(email));
+    const [users] = await pool.execute('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
+    const user = users?.[0];
+    if (!user) return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
+
+    // 1. Unlink transactions
+    await pool.execute('UPDATE user_transactions SET goal_id = NULL WHERE goal_id = ? AND user_id = ?', [id, user.id]);
+
+    // 2. Delete goal
+    await pool.execute('DELETE FROM savings_goals WHERE id = ? AND user_id = ?', [id, user.id]);
+    return res.json({ message: 'Xóa mục tiêu thành công.' });
+  } catch (error) {
+    console.error('DELETE goals error:', error);
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.post('/api/savings-goals/:id/contribute', async (req, res) => {
+  try {
+    const { email, amount } = req.body;
+    const goalId = req.params.id;
+    if (!email || amount === undefined) {
+      return res.status(400).json({ message: 'Thiếu thông tin email hoặc số tiền.' });
+    }
+
+    const normalizedEmail = normalizeEmail(String(email));
+    const [users] = await pool.execute('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
+    const user = users?.[0];
+    if (!user) return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
+
+    const [goals] = await pool.execute('SELECT * FROM savings_goals WHERE id = ? AND user_id = ?', [goalId, user.id]);
+    const goal = goals?.[0];
+    if (!goal) return res.status(404).json({ message: 'Không tìm thấy mục tiêu tiết kiệm.' });
+
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+    // 1. Update Goal
+    await pool.execute(
+      'UPDATE savings_goals SET current_amount = current_amount + ?, updated_at = ? WHERE id = ?',
+      [amount, now, goalId]
+    );
+
+    // 2. Create Transaction (as requested: appears as an expense with goal name as note)
+    await pool.execute(
+      `INSERT INTO user_transactions (
+        user_id, type, amount, description, category, source, goal_id, occurred_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [user.id, 'expense', amount, goal.name, 'Tiết kiệm', 'manual', goalId, now, now, now]
+    );
+
+    return res.json({ message: 'Ghi nhận tiết kiệm và chi tiêu thành công.' });
+  } catch (error) {
+    console.error('Contribute error:', error);
     return res.status(500).json({ message: 'Lỗi máy chủ.' });
   }
 });

@@ -55,6 +55,8 @@ export default function HomeScreen() {
   const [activeTab, setActiveTab] = useState<'home' | 'transactions' | 'community' | 'treasure'>(
     'home'
   );
+  const homeScrollRef = useRef<ScrollView>(null);
+  const [goalsY, setGoalsY] = useState(0);
   const [txItems, setTxItems] = useState<any[]>([]);
   const [txFilter, setTxFilter] = useState<'all' | 'expense' | 'income'>('all');
   const [txLoading, setTxLoading] = useState(false);
@@ -86,15 +88,40 @@ export default function HomeScreen() {
     visible: boolean;
     title: string;
     message: string;
-    type: 'delete' | 'update';
+    type: 'delete' | 'update' | 'success';
     onConfirm: () => void;
   }>({
     visible: false,
     title: '',
     message: '',
-    type: 'update',
+    type: 'success',
     onConfirm: () => {},
   });
+
+  const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
+  const [savingsGoals, setSavingsGoals] = useState<any[]>([]);
+  const [isGoalsLoading, setIsGoalsLoading] = useState(false);
+  const [isAddGoalModalOpen, setIsAddGoalModalOpen] = useState(false);
+
+  // Form states for adding goal
+  const [goalName, setGoalName] = useState('');
+  const [targetAmount, setTargetAmount] = useState('');
+  const [currentAmount, setCurrentAmount] = useState('0');
+  const [goalStartDate] = useState(() => {
+    const d = new Date();
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    return `${day}/${month}/${d.getFullYear()}`;
+  });
+  const [goalEndDate, setGoalEndDate] = useState('');
+  const [selectedGoalIcon, setSelectedGoalIcon] = useState('🎯');
+  const [goalDateError, setGoalDateError] = useState('');
+
+  const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
+  const [selectedGoalForDeposit, setSelectedGoalForDeposit] = useState<any>(null);
+  const [depositAmount, setDepositAmount] = useState('');
+
+  const GOAL_ICONS = ['💰', '✈️', '🏠', '🚗', '💻', '📱', '🎓', '💍', '🏖️', '🎮', '📚', '⌚', '🎸', '🏋️', '🎯'];
 
   const formatCommunityTime = (date: string | Date) => {
     const d = new Date(date);
@@ -156,7 +183,11 @@ export default function HomeScreen() {
         // Sync points with header
         const self = data.items.find((item: any) => item.id === currentUser?.id);
         if (self) {
-          setCurrentUser((prev: any) => ({ ...prev, points: self.points }));
+          setCurrentUser((prev: any) => ({ 
+            ...prev, 
+            points: self.points,
+            streak_count: self.streak_count 
+          }));
         }
       }
     } catch (error) {
@@ -180,6 +211,150 @@ export default function HomeScreen() {
         loadRanking();
       }
     } catch (error) {}
+  };
+
+  const loadSavingsGoals = useCallback(async () => {
+    if (!userEmail) return;
+    setIsGoalsLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/savings-goals?email=${userEmail}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setSavingsGoals(data);
+      }
+    } catch (err) {
+      console.error('Load goals err:', err);
+    } finally {
+      setIsGoalsLoading(false);
+    }
+  }, [userEmail]);
+
+  const handleDeleteGoal = async (goalId: number) => {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/savings-goals/${goalId}?email=${encodeURIComponent(userEmail)}`, {
+        method: 'DELETE',
+      });
+      if (resp.ok) {
+        loadTransactions();
+        loadSavingsGoals();
+        setCustomConfirm({
+          visible: true,
+          title: 'Thành công',
+          message: 'Mục tiêu tiết kiệm đã được xóa.',
+          type: 'success',
+          onConfirm: () => {},
+        });
+      }
+    } catch (err) {
+      Alert.alert('Lỗi', 'Không thể xóa mục tiêu.');
+    }
+  };
+
+  const confirmDeleteGoal = (goal: any) => {
+    setCustomConfirm({
+      visible: true,
+      title: 'Xóa mục tiêu',
+      message: 'Bạn muốn xóa danh mục tiết kiệm này?',
+      type: 'delete',
+      onConfirm: () => handleDeleteGoal(goal.id),
+    });
+  };
+
+  const handleContributeToGoal = async () => {
+    if (!depositAmount || !selectedGoalForDeposit) return;
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/savings-goals/${selectedGoalForDeposit.id}/contribute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: userEmail,
+          amount: Number(depositAmount),
+        }),
+      });
+      if (resp.ok) {
+        setIsDepositModalOpen(false);
+        setDepositAmount('');
+        loadSavingsGoals();
+        loadTransactions();
+        setCustomConfirm({
+          visible: true,
+          title: 'Thành công',
+          message: `Đã tiết kiệm ${formatAmountInput(depositAmount)}đ cho mục tiêu ${selectedGoalForDeposit.name}.`,
+          type: 'success',
+          onConfirm: () => {},
+        });
+      } else {
+        const data = await resp.json();
+        Alert.alert('Lỗi', data.message || 'Không thể thực hiện tiết kiệm.');
+      }
+    } catch (err) {
+      Alert.alert('Lỗi', 'Đã có lỗi xảy ra.');
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'home') {
+      loadSavingsGoals();
+    }
+  }, [activeTab, loadSavingsGoals]);
+
+  const handleAddSavingsGoal = async () => {
+    if (!goalName || !targetAmount || !goalEndDate) {
+      Alert.alert('Lỗi', 'Vui lòng điền đầy đủ các thông tin bắt buộc (*).');
+      return;
+    }
+
+    // Convert display date DD/MM/YYYY to storage date YYYY-MM-DD
+    const convertToStorageDate = (displayDate: string) => {
+      const parts = displayDate.split('/');
+      if (parts.length === 3) {
+        return `${parts[2]}-${parts[1]}-${parts[0]}`;
+      }
+      return displayDate;
+    };
+
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/savings-goals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: userEmail,
+          name: goalName,
+          icon: selectedGoalIcon,
+          targetAmount: Number(targetAmount),
+          currentAmount: Number(currentAmount),
+          startDate: convertToStorageDate(goalStartDate),
+          endDate: convertToStorageDate(goalEndDate),
+        }),
+      });
+
+      if (resp.ok) {
+        setIsAddGoalModalOpen(false);
+        setGoalName('');
+        setTargetAmount('');
+        setCurrentAmount('0');
+        setGoalEndDate('');
+        loadSavingsGoals();
+        setCustomConfirm({
+          visible: true,
+          title: 'Thành công',
+          message: 'Đã thêm mục tiêu tiết kiệm mới của bạn.',
+          type: 'success',
+          onConfirm: () => {},
+        });
+      } else {
+        const err = await resp.json();
+        setCustomConfirm({
+          visible: true,
+          title: 'Lỗi',
+          message: err.message || 'Không thể thêm mục tiêu.',
+          type: 'update',
+          onConfirm: () => {},
+        });
+      }
+    } catch (err) {
+      Alert.alert('Lỗi', 'Đã có lỗi xảy ra.');
+    }
   };
 
   const openComments = async (post: any) => {
@@ -457,6 +632,59 @@ export default function HomeScreen() {
       monthlyBudget: BUDGET // Exporting for UI
     };
   }, [txItems, selectedMonth, selectedYear, onboardingData]);
+
+  const { allTimeBalance, monthlySavings, balanceTrend } = useMemo(() => {
+    const savingsMap = new Map<string, { income: number, expense: number }>();
+    let totalIn = 0;
+    let totalOut = 0;
+
+    txItems.forEach(tx => {
+      const amount = Number(tx.amount || 0);
+      if (tx.type === 'income') totalIn += amount;
+      else totalOut += amount;
+
+      if (tx.occurred_at) {
+        const d = new Date(tx.occurred_at);
+        const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+        const data = savingsMap.get(key) || { income: 0, expense: 0 };
+        if (tx.type === 'income') data.income += amount;
+        else data.expense += amount;
+        savingsMap.set(key, data);
+      }
+    });
+
+    const sortedSavings = Array.from(savingsMap.entries())
+      .map(([key, value]) => {
+        const [year, month] = key.split('-').map(Number);
+        return { 
+          year, 
+          month, 
+          savings: value.income - value.expense,
+          income: value.income,
+          expense: value.expense
+        };
+      })
+      .sort((a, b) => (b.year * 12 + b.month) - (a.year * 12 + a.month));
+
+    let trend = 0;
+    if (sortedSavings.length >= 2) {
+      const current = sortedSavings[0].savings;
+      const prev = sortedSavings[1].savings;
+      if (prev !== 0) {
+        trend = ((current - prev) / Math.abs(prev)) * 100;
+      } else {
+        trend = current > 0 ? 100 : 0;
+      }
+    } else if (sortedSavings.length === 1) {
+      trend = 100;
+    }
+
+    return { 
+      allTimeBalance: totalIn - totalOut, 
+      monthlySavings: sortedSavings,
+      balanceTrend: trend
+    };
+  }, [txItems]);
 
   const chartPanResponder = useMemo(() =>
     PanResponder.create({
@@ -804,6 +1032,15 @@ export default function HomeScreen() {
     }
   };
 
+  const formatDateInput = (text: string) => {
+    const val = text.replace(/[^\d]/g, '');
+    let res = '';
+    if (val.length > 0) res += val.substring(0, 2);
+    if (val.length > 2) res += '/' + val.substring(2, 4);
+    if (val.length > 4) res += '/' + val.substring(4, 8);
+    return res;
+  };
+
   const formatDateTime = (value?: string) => {
     if (!value) return '';
     const date = new Date(value);
@@ -875,6 +1112,7 @@ export default function HomeScreen() {
         return;
       }
       loadTransactions();
+      loadSavingsGoals();
     } catch (error) {
       Alert.alert('Lỗi', 'Không kết nối được máy chủ.');
     }
@@ -1172,6 +1410,7 @@ export default function HomeScreen() {
       </View>
 
       <ScrollView 
+        ref={homeScrollRef}
         style={activeTab === 'community' ? { display: 'none' } : {}}
         scrollEnabled={!isChartBusy} 
         contentContainerStyle={styles.container} 
@@ -1393,6 +1632,100 @@ export default function HomeScreen() {
                 <Text style={styles.summaryValueExpense}>{formatAmount(totalExpense)}</Text>
               </TouchableOpacity>
             </View>
+
+            <TouchableOpacity 
+              style={styles.balanceCard}
+              activeOpacity={0.8}
+              onPress={() => setIsBalanceModalOpen(true)}
+            >
+              <Text style={styles.balanceLabel}>Số dư hiện tại</Text>
+              <Text style={styles.balanceValue}>{formatAmount(allTimeBalance)}</Text>
+              <View style={styles.balanceFooter}>
+                <Ionicons 
+                  name={balanceTrend >= 0 ? "trending-up" : "trending-down"} 
+                  size={16} 
+                  color={balanceTrend >= 0 ? "#10B981" : "#EF4444"} 
+                />
+                <Text style={[styles.balanceTrendText, { color: balanceTrend >= 0 ? "#10B981" : "#EF4444" }]}>
+                  {balanceTrend >= 0 ? '+' : ''}{balanceTrend.toFixed(0)}%
+                </Text>
+                <Text style={styles.balanceSecondaryText}> so với tháng trước</Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Savings Goals Section */}
+            <View 
+              style={styles.goalsSection}
+              onLayout={(e) => setGoalsY(e.nativeEvent.layout.y)}
+            >
+              <View style={styles.goalsHeader}>
+                <View style={styles.goalsTitleRow}>
+                  <Text style={styles.goalsTitle}>Mục tiêu tiết kiệm</Text>
+                  <MaterialCommunityIcons name="bullseye" size={19} color="#08B0C9" />
+                </View>
+                <TouchableOpacity 
+                  style={styles.addGoalBtn}
+                  onPress={() => setIsAddGoalModalOpen(true)}
+                >
+                  <Ionicons name="add" size={18} color="#FFFFFF" />
+                  <Text style={styles.addGoalBtnText}>Thêm</Text>
+                </TouchableOpacity>
+              </View>
+
+              {isGoalsLoading ? (
+                <ActivityIndicator color="#08B0C9" style={{ marginTop: 10 }} />
+              ) : savingsGoals.length === 0 ? (
+                <View style={styles.emptyGoalsCard}>
+                  <Text style={styles.emptyGoalsText}>Chưa có mục tiêu tiết kiệm nào. Hãy bắt đầu ngay!</Text>
+                </View>
+              ) : (
+                savingsGoals.map((goal) => {
+                  const progress = goal.target_amount > 0 ? (goal.current_amount / goal.target_amount) : 0;
+                  const pct = Math.min(Math.round(progress * 100), 100);
+                  
+                  return (
+                    <TouchableOpacity 
+                      key={goal.id} 
+                      style={styles.goalCard}
+                      onPress={() => {
+                        setSelectedGoalForDeposit(goal);
+                        setIsDepositModalOpen(true);
+                        setDepositAmount('');
+                      }}
+                      onLongPress={() => confirmDeleteGoal(goal)}
+                      delayLongPress={2000}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.goalCardTop}>
+                        <View style={styles.goalIconBox}>
+                          <Text style={{ fontSize: 28 }}>{goal.icon}</Text>
+                        </View>
+                        <View style={styles.goalInfo}>
+                          <Text style={styles.goalName}>{goal.name}</Text>
+                          <Text style={styles.goalProgressValue}>
+                            {formatAmount(goal.current_amount)} / {formatAmount(goal.target_amount)}
+                          </Text>
+                        </View>
+                        <Text style={styles.goalPctText}>{pct}%</Text>
+                      </View>
+
+                      <View style={styles.goalTrack}>
+                        <View style={[styles.goalFill, { width: `${pct}%` }]} />
+                      </View>
+
+                      <View style={styles.goalFooter}>
+                        <View style={styles.goalDeadlineRow}>
+                          <MaterialCommunityIcons name="calendar-clock" size={14} color="#94A3B8" />
+                          <Text style={styles.goalDeadline}>
+                            KT: {new Date(goal.end_date).toLocaleDateString('vi-VN')}
+                          </Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
           </>
         )}
 
@@ -1558,13 +1891,102 @@ export default function HomeScreen() {
         )}
 
                 {activeTab === 'treasure' && (
-          <View style={styles.txSection}>
-            <View style={styles.placeholderCard}>
-              <Ionicons name="trophy" size={28} color="#0EA5E9" />
-              <Text style={styles.placeholderTitle}>Kho báu</Text>
-              <Text style={styles.placeholderText}>Tính năng này sẽ cập nhật sau.</Text>
+          <ScrollView 
+            style={{ flex: 1, backgroundColor: '#FBFCFE' }} 
+            contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Level Card */}
+            <View style={styles.treasureLevelCard}>
+              <View style={styles.levelCardTop}>
+                <View style={styles.levelBadge}>
+                  <Ionicons name="trophy-outline" size={14} color="#FBBF24" />
+                  <Text style={styles.levelBadgeText}>Cấp độ {Math.floor((currentUser?.points || 1250) / 1000) + 1}</Text>
+                </View>
+                
+                <View style={styles.levelPointsGroup}>
+                  <Text style={styles.levelPointsValue}>{currentUser?.points || 1250}</Text>
+                  <Text style={styles.levelPointsLabel}>pts</Text>
+                </View>
+              </View>
+
+              <View style={styles.levelProgressSection}>
+                <View style={styles.levelLabelsLine}>
+                  <Text style={styles.levelLabel}>Level {Math.floor((currentUser?.points || 1250) / 1000) + 1}</Text>
+                  <Text style={styles.levelLabel}>Level {Math.floor((currentUser?.points || 1250) / 1000) + 2}</Text>
+                </View>
+                <View style={styles.levelTrack}>
+                  <View style={[styles.levelFill, { width: `${((currentUser?.points || 1250) % 1000) / 10}%` }]} />
+                </View>
+                <View style={styles.levelRemainingLine}>
+                  <MaterialCommunityIcons name="star-four-points" size={16} color="#FDE68A" />
+                  <Text style={styles.levelRemainingText}>
+                    Còn {1000 - ((currentUser?.points || 1250) % 1000)} điểm để lên cấp!
+                  </Text>
+                </View>
+              </View>
+
+              {/* Decorative elements to mimic the image */}
+              <View style={styles.levelDecorCircle} />
+              <View style={styles.levelDecorStar}>
+                <View style={styles.starCircle}>
+                   <Ionicons name="star" size={40} color="#FBBF24" />
+                </View>
+              </View>
             </View>
-          </View>
+
+            {/* Stat Cards Grid */}
+            <View style={styles.treasureGrid}>
+              <TouchableOpacity 
+                style={styles.treasureStatCard} 
+                activeOpacity={0.8}
+                onPress={() => {
+                  setActiveTab('community');
+                  setCommunityTab('ranking');
+                }}
+              >
+                <View style={[styles.statIconBox, { backgroundColor: '#FFEDD5' }]}>
+                  <MaterialCommunityIcons name="fire" size={26} color="#F97316" />
+                </View>
+                <Text style={styles.statTitle}>Streak hiện tại</Text>
+                <Text style={styles.statCount}>{currentUser?.streak_count || 0} ngày</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.treasureStatCard}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setActiveTab('home');
+                  setIsBalanceModalOpen(true);
+                }}
+              >
+                <View style={[styles.statIconBox, { backgroundColor: '#DCFCE7' }]}>
+                  <MaterialCommunityIcons name="piggy-bank" size={26} color="#22C55E" />
+                </View>
+                <Text style={styles.statTitle}>Tổng tiết kiệm</Text>
+                <Text style={styles.statCount}>{formatYAxisLabel(String(allTimeBalance))}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.treasureStatCard}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setActiveTab('home');
+                  setTimeout(() => {
+                    homeScrollRef.current?.scrollTo({ y: goalsY - 20, animated: true });
+                  }, 150);
+                }}
+              >
+                <View style={[styles.statIconBox, { backgroundColor: '#E0F2FE' }]}>
+                  <MaterialCommunityIcons name="target" size={26} color="#0EA5E9" />
+                </View>
+                <Text style={styles.statTitle}>Mục tiêu đạt</Text>
+                <Text style={styles.statCount}>
+                  {savingsGoals.filter(g => g.current_amount >= g.target_amount).length}/{savingsGoals.length}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         )}
       </ScrollView>
       {activeTab === 'community' && (
@@ -2660,30 +3082,50 @@ export default function HomeScreen() {
           <Pressable style={styles.modalBackdrop} onPress={() => setCustomConfirm({ ...customConfirm, visible: false })} />
           <View style={styles.customConfirmWrapper}>
             <View style={styles.customConfirmBox}>
-              <View style={[styles.confirmIconBox, customConfirm.type === 'delete' ? { backgroundColor: '#FEE2E2' } : { backgroundColor: '#E0F2FE' }]}>
+              <View style={[styles.confirmIconBox, 
+                customConfirm.type === 'delete' ? { backgroundColor: '#FEE2E2' } : 
+                customConfirm.type === 'success' ? { backgroundColor: '#D1FAE5' } :
+                { backgroundColor: '#E0F2FE' }
+              ]}>
                 <Ionicons 
-                  name={customConfirm.type === 'delete' ? "trash" : "checkmark-circle"} 
+                  name={
+                    customConfirm.type === 'delete' ? "trash" : 
+                    customConfirm.type === 'success' ? "checkmark-circle" :
+                    "checkmark-circle"
+                  } 
                   size={28} 
-                  color={customConfirm.type === 'delete' ? "#EF4444" : "#0EA5E9"} 
+                  color={
+                    customConfirm.type === 'delete' ? "#EF4444" : 
+                    customConfirm.type === 'success' ? "#10B981" :
+                    "#0EA5E9"
+                  } 
                 />
               </View>
               <Text style={styles.confirmTitle}>{customConfirm.title}</Text>
               <Text style={styles.confirmMessage}>{customConfirm.message}</Text>
               <View style={styles.confirmActions}>
+                {customConfirm.type !== 'success' && (
+                  <TouchableOpacity 
+                    style={styles.confirmCancelBtn} 
+                    onPress={() => setCustomConfirm({ ...customConfirm, visible: false })}
+                  >
+                    <Text style={styles.confirmCancelText}>Hủy</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity 
-                  style={styles.confirmCancelBtn} 
-                  onPress={() => setCustomConfirm({ ...customConfirm, visible: false })}
-                >
-                  <Text style={styles.confirmCancelText}>Hủy</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.confirmYesBtn, customConfirm.type === 'delete' ? { backgroundColor: '#EF4444' } : { backgroundColor: '#0EA5E9' }]}
+                  style={[styles.confirmYesBtn, 
+                    customConfirm.type === 'delete' ? { backgroundColor: '#EF4444' } : 
+                    customConfirm.type === 'success' ? { backgroundColor: '#10B981', flex: 1 } :
+                    { backgroundColor: '#0EA5E9' }
+                  ]}
                   onPress={() => {
-                    customConfirm.onConfirm();
+                    if (customConfirm.onConfirm) customConfirm.onConfirm();
                     setCustomConfirm({ ...customConfirm, visible: false });
                   }}
                 >
-                  <Text style={styles.confirmYesText}>Đồng ý</Text>
+                  <Text style={styles.confirmYesText}>
+                    {customConfirm.type === 'success' ? 'Đóng' : 'Đồng ý'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -2717,6 +3159,192 @@ export default function HomeScreen() {
               <TouchableOpacity style={styles.updatePostBtn} onPress={handleUpdatePost}>
                 <Text style={styles.updatePostBtnText}>Cập nhật chia sẻ</Text>
               </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      )}
+
+      {/* Balance Details Modal */}
+      {isBalanceModalOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsBalanceModalOpen(false)} />
+          <View style={styles.balanceModalWrapper}>
+            <View style={styles.balanceModal}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Lịch sử tiết kiệm</Text>
+                <TouchableOpacity onPress={() => setIsBalanceModalOpen(false)}>
+                  <Ionicons name="close" size={24} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+              
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 400 }}>
+                {monthlySavings.length === 0 ? (
+                  <Text style={styles.emptyText}>Chưa có dữ liệu giao dịch.</Text>
+                ) : (
+                  monthlySavings.map((item, idx) => (
+                    <TouchableOpacity 
+                      key={`${item.year}-${item.month}`}
+                      style={[styles.savingsItem, idx === monthlySavings.length - 1 && { borderBottomWidth: 0 }]}
+                      onPress={() => {
+                        setSelectedMonth(item.month);
+                        setSelectedYear(item.year);
+                        setTxFilter('all');
+                        setActiveTab('transactions');
+                        setIsBalanceModalOpen(false);
+                      }}
+                    >
+                      <View style={styles.savingsDateInfo}>
+                        <Text style={styles.savingsMonth}>Tháng {item.month}</Text>
+                        <Text style={styles.savingsYear}>{item.year}</Text>
+                      </View>
+                      <View style={styles.savingsValueInfo}>
+                        <Text style={[styles.savingsAmount, item.savings >= 0 ? styles.positiveSavings : styles.negativeSavings]}>
+                          {item.savings >= 0 ? '+' : ''}{formatAmount(item.savings)}
+                        </Text>
+                        <Text style={styles.savingsSummaryText}>
+                          Thu: {formatYAxisLabel(String(item.income))} • Chi: {formatYAxisLabel(String(item.expense))}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color="#CBD5E1" />
+                    </TouchableOpacity>
+                  ))
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Add Savings Goal Modal */}
+      {isAddGoalModalOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsAddGoalModalOpen(false)} />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
+            style={styles.manualModalWrapper}>
+            <View style={styles.manualModal}>
+              <View style={styles.manualHeader}>
+                <View style={styles.manualTitleRow}>
+                   <Text style={styles.manualTitle}>Thêm mục tiêu tiết kiệm</Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsAddGoalModalOpen(false)}>
+                  <Ionicons name="close" size={22} color="#94A3B8" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView 
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={[styles.manualBody, { paddingBottom: 24 }]}
+                keyboardShouldPersistTaps="handled"
+              >
+                <Text style={styles.fieldLabel}>Biểu tượng mục tiêu</Text>
+                <View style={styles.iconGrid}>
+                  {GOAL_ICONS.map(icon => (
+                    <TouchableOpacity 
+                      key={icon} 
+                      style={[styles.iconChoice, selectedGoalIcon === icon && styles.iconChoiceActive]}
+                      onPress={() => setSelectedGoalIcon(icon)}
+                    >
+                      <Text style={{ fontSize: 24 }}>{icon}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.fieldLabel}>Tên mục tiêu *</Text>
+                <TextInput 
+                   style={styles.fieldInput}
+                   placeholder="Ví dụ: Du lịch Đà Lạt"
+                   placeholderTextColor="#94A3B8"
+                   value={goalName}
+                   onChangeText={setGoalName}
+                />
+
+                <Text style={styles.fieldLabel}>Số tiền mục tiêu (VNĐ) *</Text>
+                <TextInput 
+                   style={styles.fieldInput}
+                   placeholder="0"
+                   placeholderTextColor="#94A3B8"
+                   keyboardType="numeric"
+                   value={formatAmountInput(targetAmount)}
+                   onChangeText={(text) => {
+                     const digits = text.replace(/[^\d]/g, '');
+                     setTargetAmount(digits);
+                   }}
+                />
+
+                <Text style={styles.fieldLabel}>Số tiền hiện tại (tùy chọn)</Text>
+                <TextInput 
+                   style={styles.fieldInput}
+                   placeholder="0"
+                   placeholderTextColor="#94A3B8"
+                   keyboardType="numeric"
+                   value={formatAmountInput(currentAmount)}
+                   onChangeText={(text) => {
+                     const digits = text.replace(/[^\d]/g, '');
+                     setCurrentAmount(digits);
+                   }}
+                />
+
+                <View style={styles.dateRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.fieldLabel}>Ngày bắt đầu</Text>
+                    <TextInput 
+                      style={[styles.fieldInput, { backgroundColor: '#F8FAFC', color: '#94A3B8' }]}
+                      value={goalStartDate}
+                      editable={false}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.fieldLabel}>Ngày kết thúc (DD/MM/YYYY) </Text>
+                    <TextInput 
+                      style={[styles.fieldInput, goalDateError ? { borderColor: '#EF4444', borderWidth: 1 } : null]}
+                      placeholder="31/12/2026"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="numeric"
+                      maxLength={10}
+                      value={goalEndDate}
+                      onChangeText={(text) => {
+                        const formatted = formatDateInput(text);
+                        setGoalEndDate(formatted);
+                        
+                        // Validate date
+                        if (formatted.length === 10) {
+                          const parts = formatted.split('/');
+                          const d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+                          const today = new Date();
+                          today.setHours(0,0,0,0);
+                          if (d <= today) {
+                            setGoalDateError('phải lớn hơn ngày hiện tại');
+                          } else {
+                            setGoalDateError('');
+                          }
+                        } else {
+                          setGoalDateError('');
+                        }
+                      }}
+                    />
+                    {goalDateError ? (
+                      <Text style={{ color: '#EF4444', fontSize: 11, marginTop: 4 }}>{goalDateError}</Text>
+                    ) : null}
+                  </View>
+                </View>
+
+                <View style={[styles.manualActions, { marginTop: 20 }]}>
+                  <TouchableOpacity 
+                    style={styles.manualCancel}
+                    onPress={() => setIsAddGoalModalOpen(false)}
+                  >
+                    <Text style={styles.manualCancelText}>Hủy</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.manualSave, { backgroundColor: '#08B0C9' }]}
+                    onPress={handleAddSavingsGoal}
+                  >
+                    <Text style={styles.manualSaveText}>Lưu</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
             </View>
           </KeyboardAvoidingView>
         </View>
@@ -2891,6 +3519,63 @@ export default function HomeScreen() {
                 >
                   <Ionicons name="send" size={18} color="#FFFFFF" />
                 </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      )}
+
+      {/* Goal Deposit Modal */}
+      {isDepositModalOpen && (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsDepositModalOpen(false)} />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.manualModalWrapper}>
+            <View style={styles.manualModal}>
+              <View style={styles.manualHeader}>
+                <View style={styles.manualTitleRow}>
+                   <Text style={{ fontSize: 20, marginRight: 8 }}>{selectedGoalForDeposit?.icon}</Text>
+                   <Text style={styles.manualTitle}>Tiết kiệm cho mục tiêu</Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsDepositModalOpen(false)}>
+                  <Ionicons name="close" size={22} color="#94A3B8" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={[styles.manualBody, { paddingVertical: 10 }]}>
+                <Text style={{ fontSize: 16, color: '#0F172A', fontWeight: '600', marginBottom: 10 }}>
+                  {selectedGoalForDeposit?.name}
+                </Text>
+                
+                <Text style={styles.fieldLabel}>Số tiền muốn tiết kiệm (VNĐ)</Text>
+                <TextInput 
+                   style={styles.fieldInput}
+                   placeholder="0"
+                   placeholderTextColor="#94A3B8"
+                   keyboardType="numeric"
+                   autoFocus
+                   value={formatAmountInput(depositAmount)}
+                   onChangeText={(text) => {
+                     const digits = text.replace(/[^\d]/g, '');
+                     setDepositAmount(digits);
+                   }}
+                />
+
+                <View style={[styles.manualActions, { marginTop: 15 }]}>
+                  <TouchableOpacity 
+                    style={styles.manualCancel}
+                    onPress={() => setIsDepositModalOpen(false)}
+                  >
+                    <Text style={styles.manualCancelText}>Hủy</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.manualSave, { backgroundColor: '#10B981' }]}
+                    onPress={handleContributeToGoal}
+                  >
+                    <Text style={styles.manualSaveText}>Tiết kiệm ngay</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
           </KeyboardAvoidingView>
@@ -3581,7 +4266,7 @@ const styles = StyleSheet.create({
     }),
   },
   manualBody: {
-    gap: 10,
+    gap: 15,
     paddingBottom: 4,
   },
   fieldLabel: {
@@ -5432,5 +6117,482 @@ const styles = StyleSheet.create({
       android: 'sans-serif-medium',
       default: 'Avenir Next',
     }),
+  },
+  // Treasure Tab Styles
+  treasureLevelCard: {
+    padding: 22,
+    borderRadius: 20,
+    backgroundColor: '#08B0C9', // Match primary blue theme
+    position: 'relative',
+    overflow: 'hidden',
+    marginBottom: 16,
+    // Shadows removed to match "không đổ bóng" request
+  },
+  levelCardTop: {
+    gap: 12,
+    marginBottom: 20,
+  },
+  levelBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+    alignSelf: 'flex-start',
+  },
+  levelBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  levelPointsGroup: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  levelPointsValue: {
+    color: '#FFFFFF',
+    fontSize: 48,
+    lineHeight: 52,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Bold',
+      android: 'sans-serif-bold',
+      default: 'Avenir Next',
+    }),
+  },
+  levelPointsLabel: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    paddingBottom: 6,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  levelProgressSection: {
+    gap: 8,
+  },
+  levelLabelsLine: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  levelLabel: {
+    color: '#E0F7FA',
+    fontSize: 11,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  levelTrack: {
+    height: 8,
+    backgroundColor: 'rgba(0,0,0,0.15)',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  levelFill: {
+    height: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+  },
+  levelRemainingLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+  },
+  levelRemainingText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    opacity: 0.9,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  levelDecorCircle: {
+    position: 'absolute',
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    top: -40,
+    right: -40,
+  },
+  levelDecorStar: {
+    position: 'absolute',
+    right: 15,
+    top: 40,
+  },
+  starCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  treasureGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  treasureStatCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 14,
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0', // Consistent with other cards
+    // Shadows removed
+  },
+  statIconBox: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  statTitle: {
+    fontSize: 10,
+    color: '#64748B',
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  statCount: {
+    fontSize: 14,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  // Balance Card Styles
+  balanceCard: {
+    backgroundColor: '#F5F3FF',
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#EDE9FE',
+    gap: 8,
+  },
+  balanceLabel: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  balanceValue: {
+    fontSize: 32,
+    color: '#7C3AED',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Bold',
+      android: 'sans-serif-bold',
+      default: 'Avenir Next',
+    }),
+  },
+  balanceFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  balanceTrendText: {
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+    marginLeft: 2,
+  },
+  balanceSecondaryText: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  // Balance Modal Styles
+  balanceModalWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 20,
+  },
+  balanceModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 20,
+    gap: 8,
+    maxHeight: '75%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  savingsItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    gap: 16,
+  },
+  savingsDateInfo: {
+    width: 80,
+  },
+  savingsMonth: {
+    fontSize: 15,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  savingsYear: {
+    fontSize: 12,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  savingsValueInfo: {
+    flex: 1,
+  },
+  savingsAmount: {
+    fontSize: 16,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Bold',
+      android: 'sans-serif-bold',
+      default: 'Avenir Next',
+    }),
+    marginBottom: 2,
+  },
+  positiveSavings: {
+    color: '#10B981',
+  },
+  negativeSavings: {
+    color: '#EF4444',
+  },
+  savingsSummaryText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  modalTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  emptyText: {
+    textAlign: 'center',
+    color: '#94A3B8',
+    marginTop: 20,
+    fontSize: 14,
+  },
+  // Goals Styles
+  goalsSection: {
+    marginTop: 24,
+    gap: 16,
+  },
+  goalsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  goalsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  goalsTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  addGoalBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#08B0C9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    gap: 4,
+  },
+  addGoalBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  goalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    gap: 12,
+  },
+  goalCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  goalIconBox: {
+    width: 54,
+    height: 54,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goalInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  goalName: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  goalProgressValue: {
+    fontSize: 13,
+    color: '#64748B',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  goalPctText: {
+    fontSize: 16,
+    color: '#08B0C9',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Bold',
+      android: 'sans-serif-bold',
+      default: 'Avenir Next',
+    }),
+  },
+  goalTrack: {
+    height: 10,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  goalFill: {
+    height: '100%',
+    backgroundColor: '#0F172A', // Sm mu nhu ?nh minh h?a
+    borderRadius: 5,
+  },
+  goalFooter: {
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  goalDeadlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  goalDeadline: {
+    fontSize: 12,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  emptyGoalsCard: {
+    padding: 30,
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 20,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  emptyGoalsText: {
+    color: '#94A3B8',
+    textAlign: 'center',
+    fontSize: 14,
+  },
+
+  // Goal Modal Specific Content Styles
+  iconGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    justifyContent: 'center',
+  },
+  iconChoice: {
+    width: '17.5%',
+    aspectRatio: 1,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    padding: 0,
+  },
+  iconChoiceActive: {
+    borderColor: '#08B0C9',
+    backgroundColor: '#E0F7FA',
+  },
+  dateRow: {
+    flexDirection: 'row',
+    gap: 12,
   },
 });
