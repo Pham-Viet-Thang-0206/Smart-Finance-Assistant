@@ -3,6 +3,7 @@ import {
   Animated,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   PanResponder,
   Pressable,
@@ -20,11 +21,54 @@ import { LineChart } from 'react-native-chart-kit';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { API_BASE_URL } from '@/constants/api';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as FileSystem from 'expo-file-system';
+
+type ChatRole = 'assistant' | 'user';
+
+type ChatMessage = {
+  id: string;
+  role: ChatRole;
+  text: string;
+  timestamp: string;
+  highlight?: string;
+};
+
+function BotAvatar({ size }: { size: number }) {
+  const accent = '#15C5D8';
+  const innerSize = size * 0.68;
+
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: Math.round(size * 0.3),
+        backgroundColor: accent,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+      <Svg width={innerSize} height={innerSize} viewBox="0 0 64 64">
+        <Path d="M32 10V18" stroke="#FFFFFF" strokeWidth="4.5" strokeLinecap="round" />
+        <Circle cx="32" cy="8" r="4.5" fill="#FFFFFF" />
+        <Rect x="12" y="20" width="40" height="28" rx="12" fill="#FFFFFF" />
+        <Circle cx="25" cy="34" r="3.7" fill={accent} />
+        <Circle cx="39" cy="34" r="3.7" fill={accent} />
+        <Path
+          d="M25 42C27.1 43.8 29.5 44.7 32 44.7C34.5 44.7 36.9 43.8 39 42"
+          stroke={accent}
+          strokeWidth="3.5"
+          strokeLinecap="round"
+        />
+      </Svg>
+    </View>
+  );
+}
 
 export default function HomeScreen() {
   const params = useLocalSearchParams<{ email?: string }>();
@@ -120,8 +164,26 @@ export default function HomeScreen() {
   const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
   const [selectedGoalForDeposit, setSelectedGoalForDeposit] = useState<any>(null);
   const [depositAmount, setDepositAmount] = useState('');
+  const [isChatMenuOpen, setIsChatMenuOpen] = useState(false);
+  const [isChatScreenOpen, setIsChatScreenOpen] = useState(false);
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatSuggestions, setChatSuggestions] = useState<string[]>([]);
+  const [chatHighlight, setChatHighlight] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [isVoiceBusy, setIsVoiceBusy] = useState(false);
+  const [voiceHintText, setVoiceHintText] = useState('Nhấn micro để bắt đầu nói chuyện');
+  const chatScrollRef = useRef<ScrollView>(null);
+  const nativeRecordingRef = useRef<any>(null);
+  const webRecorderRef = useRef<any>(null);
+  const webChunksRef = useRef<Blob[]>([]);
+  const voicePulseAnim = useRef(new Animated.Value(0)).current;
 
   const GOAL_ICONS = ['💰', '✈️', '🏠', '🚗', '💻', '📱', '🎓', '💍', '🏖️', '🎮', '📚', '⌚', '🎸', '🏋️', '🎯'];
+  const botShortName = 'Mon';
+  const botFullName = onboardingData?.aiName || 'MoneeBot';
 
   const formatCommunityTime = (date: string | Date) => {
     const d = new Date(date);
@@ -132,6 +194,35 @@ export default function HomeScreen() {
     const minutes = String(d.getMinutes()).padStart(2, '0');
     return `${hours}:${minutes} ${day}/${month}/${year}`;
   };
+
+  const formatChatTime = (date = new Date()) => {
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  };
+
+  const createAssistantIntro = useCallback((): ChatMessage => {
+    const toneLabel =
+      onboardingData?.aiTone === 'friendly'
+        ? 'thân thiện'
+        : onboardingData?.aiTone === 'strict'
+          ? 'thẳng và kỷ luật'
+          : 'thực dụng';
+
+    return {
+      id: 'chat-intro',
+      role: 'assistant',
+      timestamp: formatChatTime(),
+      text:
+        `Xin chào! Tôi là ${botFullName}, trợ lý tài chính AI của bạn.\n\n` +
+        `Tôi có thể giúp bạn:\n` +
+        `• Phân tích chi tiêu và đưa ra lời khuyên\n` +
+        `• Tạo kế hoạch tiết kiệm cá nhân\n` +
+        `• Trả lời câu hỏi về ngân sách tháng này\n` +
+        `• Gợi ý cách tối ưu mục tiêu và giao dịch\n\n` +
+        `Phong cách hiện tại của tôi là ${toneLabel}. Bạn cần tôi hỗ trợ gì hôm nay?`,
+    };
+  }, [botFullName, onboardingData?.aiTone]);
 
   const loadUserInfo = async () => {
     if (!params.email) return;
@@ -1310,6 +1401,53 @@ export default function HomeScreen() {
       .sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
   }, [expenseCategoryStats, monthFilteredTransactions, selectedCategoryKey]);
 
+  const defaultChatSuggestions = useMemo(() => {
+    const topGoalName = savingsGoals?.[0]?.name;
+    const items = [
+      'Phân tích chi tiêu của tôi',
+      'Làm sao để tiết kiệm hơn?',
+      'Tôi còn bao nhiêu ngân sách?',
+      topGoalName ? `Lập kế hoạch cho mục tiêu ${topGoalName}` : 'Gợi ý mục tiêu tiết kiệm cho tôi',
+    ];
+    return items.filter(Boolean).slice(0, 4);
+  }, [savingsGoals]);
+
+  const recentTransactionsPreview = useMemo(() => txItems.slice(0, 4), [txItems]);
+
+  const aiInsight = useMemo(() => {
+    const topExpense = expenseCategoryStats.rows[0];
+    if (spendPercentRaw >= 90) {
+      return {
+        title: 'Cảnh báo ngân sách',
+        body: `Bạn đã dùng ${spendPercent}% ngân sách tháng này. Hãy giảm chi ở ${topExpense?.meta.label || 'nhóm chi tiêu lớn nhất'} để tránh vượt kế hoạch.`,
+        prompt: 'Tôi đang vượt ngân sách, giúp tôi cắt giảm',
+      };
+    }
+
+    if (topExpense && topExpense.percent >= 35) {
+      return {
+        title: 'Gợi ý từ AI',
+        body: `Chi tiêu "${topExpense.meta.label}" đang chiếm ${topExpense.percent.toFixed(0)}% tổng chi tháng này. Tôi có thể gợi ý cách tối ưu danh mục này cho bạn.`,
+        prompt: `Phân tích danh mục ${topExpense.meta.label} cho tôi`,
+      };
+    }
+
+    if (savingsGoals.length > 0) {
+      const nextGoal = savingsGoals[0];
+      return {
+        title: 'Gợi ý từ AI',
+        body: `Mục tiêu "${nextGoal.name}" đang đạt ${Math.min(100, Math.round((Number(nextGoal.current_amount || 0) / Math.max(Number(nextGoal.target_amount || 1), 1)) * 100))}%. Tôi có thể giúp bạn chia nhỏ kế hoạch để hoàn thành đúng hạn.`,
+        prompt: `Lập kế hoạch tiết kiệm cho mục tiêu ${nextGoal.name}`,
+      };
+    }
+
+    return {
+      title: 'Gợi ý từ AI',
+      body: 'Bắt đầu trò chuyện với Mon để xem phân tích chi tiêu, tối ưu ngân sách và nhận lời khuyên tiết kiệm cá nhân hóa.',
+      prompt: 'Phân tích tài chính hiện tại của tôi',
+    };
+  }, [expenseCategoryStats.rows, savingsGoals, spendPercent, spendPercentRaw]);
+
   useEffect(() => {
     if (activeTab === 'transactions') {
       loadTransactions();
@@ -1374,6 +1512,351 @@ export default function HomeScreen() {
       loadTransactions();
     }
   };
+
+  useEffect(() => {
+    if (!chatMessages.length) {
+      setChatMessages([createAssistantIntro()]);
+    }
+  }, [chatMessages.length, createAssistantIntro]);
+
+  useEffect(() => {
+    if (defaultChatSuggestions.length > 0 && chatSuggestions.length === 0) {
+      setChatSuggestions(defaultChatSuggestions);
+    }
+  }, [chatSuggestions.length, defaultChatSuggestions]);
+
+  useEffect(() => {
+    if (!isChatScreenOpen) return;
+    const timeout = setTimeout(() => {
+      chatScrollRef.current?.scrollToEnd({ animated: true });
+    }, 80);
+    return () => clearTimeout(timeout);
+  }, [chatMessages, isChatScreenOpen]);
+
+  useEffect(() => {
+    if (!isRecordingVoice) {
+      voicePulseAnim.stopAnimation();
+      voicePulseAnim.setValue(0);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(voicePulseAnim, {
+          toValue: 1,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+        Animated.timing(voicePulseAnim, {
+          toValue: 0,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isRecordingVoice, voicePulseAnim]);
+
+  const resetChatIntro = useCallback(() => {
+    setChatMessages([createAssistantIntro()]);
+    setChatSuggestions(defaultChatSuggestions);
+    setChatHighlight('');
+  }, [createAssistantIntro, defaultChatSuggestions]);
+
+  const openChatScreen = useCallback(() => {
+    setIsChatMenuOpen(false);
+    setIsVoiceModalOpen(false);
+    setIsChatScreenOpen(true);
+    if (chatMessages.length === 0) {
+      resetChatIntro();
+    }
+  }, [chatMessages.length, resetChatIntro]);
+
+  const buildChatHistoryPayload = useCallback(
+    (messages: ChatMessage[]) =>
+      messages.slice(-8).map((item) => ({
+        role: item.role,
+        text: item.text,
+      })),
+    []
+  );
+
+  const sendChatMessage = useCallback(
+    async (rawText?: string) => {
+      const messageText = String(rawText ?? chatInput).trim();
+      if (!messageText || !userEmail || isChatLoading) return;
+
+      const userMessage: ChatMessage = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        text: messageText,
+        timestamp: formatChatTime(),
+      };
+
+      const nextMessages = [...chatMessages, userMessage];
+      setChatMessages(nextMessages);
+      setChatInput('');
+      setIsChatLoading(true);
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: userEmail,
+            message: messageText,
+            history: buildChatHistoryPayload(nextMessages),
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.message || 'Không thể trò chuyện với trợ lý AI.');
+        }
+
+        const assistantMessage: ChatMessage = {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          text: String(data?.reply || 'Mình chưa có phản hồi phù hợp lúc này.'),
+          timestamp: formatChatTime(),
+          highlight: data?.highlight ? String(data.highlight) : '',
+        };
+
+        setChatMessages((prev) => [...prev, assistantMessage]);
+        setChatSuggestions(
+          Array.isArray(data?.suggestions) && data.suggestions.length > 0
+            ? data.suggestions.slice(0, 4)
+            : defaultChatSuggestions
+        );
+        setChatHighlight(data?.highlight ? String(data.highlight) : '');
+        setIsChatScreenOpen(true);
+      } catch (error) {
+        const fallbackMessage: ChatMessage = {
+          id: `assistant-error-${Date.now()}`,
+          role: 'assistant',
+          text: 'Mình chưa kết nối được AI lúc này. Bạn thử lại sau hoặc dùng nhập thủ công/quét hóa đơn nhé.',
+          timestamp: formatChatTime(),
+        };
+        setChatMessages((prev) => [...prev, fallbackMessage]);
+      } finally {
+        setIsChatLoading(false);
+      }
+    },
+    [
+      apiBaseUrl,
+      buildChatHistoryPayload,
+      chatInput,
+      chatMessages,
+      defaultChatSuggestions,
+      isChatLoading,
+      userEmail,
+    ]
+  );
+
+  const handleQuickChatPrompt = useCallback(
+    async (prompt: string) => {
+      openChatScreen();
+      await sendChatMessage(prompt);
+    },
+    [openChatScreen, sendChatMessage]
+  );
+
+  const closeVoiceModal = useCallback(() => {
+    if (Platform.OS === 'web') {
+      const recorder = webRecorderRef.current;
+      if (recorder && recorder.state !== 'inactive') {
+        try {
+          recorder.stop();
+          recorder.stream?.getTracks?.().forEach((track: any) => track.stop());
+        } catch (error) {}
+      }
+      webRecorderRef.current = null;
+      webChunksRef.current = [];
+    } else if (nativeRecordingRef.current) {
+      nativeRecordingRef.current.stopAndUnloadAsync?.().catch(() => {});
+      nativeRecordingRef.current = null;
+      Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      }).catch(() => {});
+    }
+    setIsVoiceModalOpen(false);
+    setIsRecordingVoice(false);
+    setIsVoiceBusy(false);
+    setVoiceHintText('Nhấn micro để bắt đầu nói chuyện');
+  }, []);
+
+  const blobToBase64 = useCallback((blob: Blob) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = String(reader.result || '');
+        resolve(result.includes(',') ? result.split(',')[1] : result);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }, []);
+
+  const transcribeAndSendVoice = useCallback(
+    async (audioBase64: string, audioMimeType: string) => {
+      try {
+        setIsVoiceBusy(true);
+        setVoiceHintText('Đang chuyển giọng nói thành văn bản...');
+        const response = await fetch(`${apiBaseUrl}/api/speech/transcribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            audioBase64,
+            audioMimeType,
+            languageCode: 'vi-VN',
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok || !String(data?.text || '').trim()) {
+          throw new Error(data?.message || 'Không nhận diện được giọng nói.');
+        }
+
+        closeVoiceModal();
+        openChatScreen();
+        await sendChatMessage(String(data.text));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Không thể xử lý giọng nói lúc này.';
+        Alert.alert('Giọng nói', `${message} Bạn thử nói lại hoặc nhập tay nhé.`);
+        closeVoiceModal();
+      }
+    },
+    [apiBaseUrl, closeVoiceModal, openChatScreen, sendChatMessage]
+  );
+
+  const stopVoiceRecording = useCallback(async () => {
+    try {
+      setIsRecordingVoice(false);
+      setVoiceHintText('Đang xử lý giọng nói...');
+
+      if (Platform.OS === 'web') {
+        const webRecorder = webRecorderRef.current;
+        if (!webRecorder) return;
+        const audioBlob: Blob = await new Promise((resolve) => {
+          webRecorder.onstop = () =>
+            resolve(new Blob(webChunksRef.current, { type: webRecorder.mimeType || 'audio/webm' }));
+          webRecorder.stop();
+        });
+        const audioBase64 = await blobToBase64(audioBlob);
+        webChunksRef.current = [];
+        await transcribeAndSendVoice(audioBase64, audioBlob.type || 'audio/webm');
+        return;
+      }
+
+      const recording = nativeRecordingRef.current;
+      if (!recording) return;
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      nativeRecordingRef.current = null;
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+      if (!uri) throw new Error('Không lấy được file ghi âm.');
+
+      const audioBase64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      await transcribeAndSendVoice(audioBase64, 'audio/m4a');
+    } catch (error) {
+      Alert.alert('Giọng nói', 'Không thể dừng ghi âm đúng cách. Bạn thử lại nhé.');
+      closeVoiceModal();
+    }
+  }, [blobToBase64, closeVoiceModal, transcribeAndSendVoice]);
+
+  const startVoiceRecording = useCallback(async () => {
+    try {
+      setIsVoiceBusy(false);
+      setVoiceHintText('Đang nghe... chạm lại để gửi');
+
+      if (Platform.OS === 'web') {
+        const mediaDevices = (globalThis as any)?.navigator?.mediaDevices;
+        const MediaRecorderCtor = (globalThis as any)?.MediaRecorder;
+        if (!mediaDevices?.getUserMedia || !MediaRecorderCtor) {
+          Alert.alert('Giọng nói', 'Trình duyệt hiện tại chưa hỗ trợ ghi âm.');
+          return;
+        }
+
+        const stream = await mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorderCtor(stream);
+        webChunksRef.current = [];
+        recorder.ondataavailable = (event: any) => {
+          if (event.data?.size) webChunksRef.current.push(event.data);
+        };
+        recorder.start();
+        webRecorderRef.current = recorder;
+        setIsRecordingVoice(true);
+        return;
+      }
+
+      const permission = await Audio.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Quyền micro', 'Bạn cần cấp quyền micro để dùng tính năng giọng nói.');
+        return;
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        playThroughEarpieceAndroid: false,
+        shouldDuckAndroid: true,
+      });
+
+      const recording = new Audio.Recording();
+      await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await recording.startAsync();
+      nativeRecordingRef.current = recording;
+      setIsRecordingVoice(true);
+    } catch (error) {
+      Alert.alert('Giọng nói', 'Không thể bắt đầu ghi âm. Bạn thử lại sau nhé.');
+      closeVoiceModal();
+    }
+  }, [closeVoiceModal]);
+
+  const toggleVoiceRecording = useCallback(async () => {
+    if (isVoiceBusy) return;
+    if (isRecordingVoice) {
+      await stopVoiceRecording();
+    } else {
+      await startVoiceRecording();
+    }
+  }, [isRecordingVoice, isVoiceBusy, startVoiceRecording, stopVoiceRecording]);
+
+  const openVoiceModal = useCallback(() => {
+    setIsChatMenuOpen(false);
+    setIsChatScreenOpen(false);
+    setVoiceHintText('Nhấn micro để bắt đầu nói chuyện');
+    setIsVoiceModalOpen(true);
+  }, []);
+
+  const handleChatShortcutAction = useCallback(
+    (action: 'chat' | 'voice' | 'manual' | 'scan' | 'gallery') => {
+      setIsChatMenuOpen(false);
+      if (action === 'chat') {
+        openChatScreen();
+        return;
+      }
+      if (action === 'voice') {
+        openVoiceModal();
+        return;
+      }
+      if (action === 'manual') {
+        setIsManualOpen(true);
+        return;
+      }
+      if (action === 'scan') {
+        setIsScanOpen(true);
+        return;
+      }
+      setIsUploadOpen(true);
+    },
+    [openChatScreen, openVoiceModal]
+  );
   return (
     <SafeAreaView style={styles.safeArea}>
       <View
@@ -1383,7 +1866,7 @@ export default function HomeScreen() {
         ]}>
         <View style={styles.headerLeft}>
           <View style={styles.avatar}>
-            <MaterialCommunityIcons name="robot-excited" size={22} color="#0EA5E9" />
+            <BotAvatar size={22} />
           </View>
           <View>
             <Text style={styles.appName}>Monee</Text>
@@ -1726,6 +2209,91 @@ export default function HomeScreen() {
                 })
               )}
             </View>
+
+            <TouchableOpacity
+              style={styles.chatLaunchCard}
+              activeOpacity={0.9}
+              onPress={openChatScreen}
+            >
+              <View style={styles.chatLaunchAvatar}>
+                <BotAvatar size={34} />
+              </View>
+              <View style={styles.chatLaunchContent}>
+                <Text style={styles.chatLaunchTitle}>Trò chuyện với {botShortName}</Text>
+                <Text style={styles.chatLaunchSubtitle}>Hỏi bất cứ điều gì về tài chính!</Text>
+              </View>
+              <Ionicons name="arrow-forward" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            <View style={styles.homeRecentSection}>
+              <Text style={styles.homeRecentTitle}>Giao dịch gần đây</Text>
+              <View style={styles.homeRecentList}>
+                {recentTransactionsPreview.length === 0 ? (
+                  <View style={styles.homeRecentEmptyCard}>
+                    <Text style={styles.homeRecentEmptyText}>Chưa có giao dịch nào để hiển thị.</Text>
+                  </View>
+                ) : (
+                  recentTransactionsPreview.map((item, index) => {
+                    const isIncome = item.type === 'income';
+                    return (
+                      <TouchableOpacity
+                        key={item.id ?? `recent-${index}`}
+                        style={styles.homeRecentItem}
+                        activeOpacity={0.8}
+                        onPress={() => {
+                          setActiveTab('transactions');
+                          setTxFilter(isIncome ? 'income' : 'expense');
+                        }}
+                      >
+                        <View style={styles.homeRecentInfo}>
+                          <Text style={styles.homeRecentName} numberOfLines={1}>
+                            {item.description || item.category || (isIncome ? 'Thu nhập' : 'Chi tiêu')}
+                          </Text>
+                          <Text style={styles.homeRecentMeta} numberOfLines={1}>
+                            {(item.category || (isIncome ? 'Lương' : 'Khác'))} • {formatDateTime(item.occurred_at)}
+                          </Text>
+                        </View>
+                        <Text style={[styles.homeRecentAmount, isIncome ? styles.homeRecentAmountIncome : styles.homeRecentAmountExpense]}>
+                          {isIncome ? '+' : '-'}
+                          {formatAmount(Number(item.amount))}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.aiInsightCard}
+              activeOpacity={0.9}
+              onPress={() => setIsChatMenuOpen(true)}
+            >
+              <View style={styles.aiInsightBadgeWrap}>
+                <TouchableOpacity
+                  style={styles.aiInsightFloatingAvatar}
+                  activeOpacity={0.9}
+                  onPress={() => setIsChatMenuOpen(true)}
+                >
+                  <BotAvatar size={46} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.aiInsightFloatingBadge}
+                  activeOpacity={0.9}
+                  onPress={() => setIsChatMenuOpen(true)}
+                >
+                  <Text style={styles.aiInsightFloatingBadgeText}>{botShortName}</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.aiInsightIcon}>
+                <Ionicons name="flash-outline" size={22} color="#FFFFFF" />
+              </View>
+              <View style={styles.aiInsightContent}>
+                <Text style={styles.aiInsightTitle}>💡 {aiInsight.title}</Text>
+                <Text style={styles.aiInsightText}>{aiInsight.body}</Text>
+                <Text style={styles.aiInsightLink}>Mở công cụ AI →</Text>
+              </View>
+            </TouchableOpacity>
           </>
         )}
 
@@ -2183,8 +2751,284 @@ export default function HomeScreen() {
             )}
           </View>
         )}
+      {isChatMenuOpen && (
+        <View style={styles.chatMenuOverlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsChatMenuOpen(false)} />
+          <View style={styles.chatMenuCard}>
+            <View style={styles.chatMenuHeader}>
+              <View style={styles.chatMenuHeaderAvatar}>
+                <BotAvatar size={28} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.chatMenuName}>{botShortName}</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsChatMenuOpen(false)} style={styles.chatMenuCloseBtn}>
+                <Ionicons name="close" size={18} color="#334155" />
+              </TouchableOpacity>
+            </View>
 
+            <View style={styles.chatMenuBubble}>
+              <Text style={styles.chatMenuBubbleText}>💙 {botShortName} thấy tiến độ tài chính của bạn khá ổn. Chọn cách bạn muốn tương tác nhé.</Text>
+            </View>
 
+            <View style={styles.chatMenuGrid}>
+              {[
+                { key: 'chat', label: 'AI Chat', icon: 'chatbubble-ellipses-outline', color: '#9333EA', bg: '#F3E8FF' },
+                { key: 'voice', label: 'Voice', icon: 'mic-outline', color: '#2563EB', bg: '#DBEAFE' },
+                { key: 'manual', label: 'Manual', icon: 'create-outline', color: '#EA580C', bg: '#FEF3C7' },
+                { key: 'scan', label: 'Scan', icon: 'scan-outline', color: '#16A34A', bg: '#DCFCE7' },
+                { key: 'gallery', label: 'Gallery', icon: 'image-outline', color: '#DC2626', bg: '#FCE7F3' },
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  style={[styles.chatMenuAction, { backgroundColor: item.bg }]}
+                  onPress={() => handleChatShortcutAction(item.key as 'chat' | 'voice' | 'manual' | 'scan' | 'gallery')}
+                >
+                  <Ionicons name={item.icon as never} size={20} color={item.color} />
+                  <Text style={[styles.chatMenuActionText, { color: item.color }]}>{item.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </View>
+      )}
+
+      {isChatScreenOpen && (
+        <Modal visible transparent animationType="slide" onRequestClose={() => setIsChatScreenOpen(false)}>
+          <KeyboardAvoidingView
+            style={styles.chatModalWrapper}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+          >
+            <View style={styles.chatScreenPanel}>
+            <View
+              style={[
+                styles.chatScreenHero,
+                { paddingTop: (Platform.OS === 'ios' ? 10 : 16) + insets.top },
+              ]}
+            >
+              <View style={styles.chatScreenHeroTop}>
+                <View style={styles.chatScreenHeroIdentity}>
+                  <View style={styles.chatScreenHeroAvatar}>
+                    <BotAvatar size={34} />
+                  </View>
+                  <View>
+                    <Text style={styles.chatScreenHeroName}>{botShortName}</Text>
+                    <Text style={styles.chatScreenHeroSubtitle}>Trợ lý tài chính AI của bạn</Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.chatScreenCloseBtn}
+                  onPress={() => setIsChatScreenOpen(false)}
+                >
+                  <Ionicons name="close" size={20} color="#0F172A" />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <ScrollView
+              ref={chatScrollRef}
+              style={styles.chatMessagesScroll}
+              contentContainerStyle={styles.chatMessagesContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              onContentSizeChange={() => chatScrollRef.current?.scrollToEnd({ animated: true })}
+            >
+              {chatMessages.map((item) => (
+                <View
+                  key={item.id}
+                  style={[
+                    styles.chatMessageRow,
+                    item.role === 'user' ? styles.chatMessageRowUser : styles.chatMessageRowAssistant,
+                  ]}
+                >
+                  {item.role === 'assistant' && (
+                    <View style={styles.chatMiniAvatar}>
+                      <BotAvatar size={18} />
+                    </View>
+                  )}
+                  <View
+                    style={[
+                      styles.chatBubble,
+                      item.role === 'assistant' ? styles.chatBubbleAssistant : styles.chatBubbleUser,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.chatBubbleText,
+                        item.role === 'user' && styles.chatBubbleTextUser,
+                      ]}
+                    >
+                      {item.text}
+                    </Text>
+                    {!!item.highlight && item.role === 'assistant' && (
+                      <View style={styles.chatHighlightBox}>
+                        <Text style={styles.chatHighlightText}>{item.highlight}</Text>
+                      </View>
+                    )}
+                    <Text
+                      style={[
+                        styles.chatBubbleTime,
+                        item.role === 'user' && styles.chatBubbleTimeUser,
+                      ]}
+                    >
+                      {item.timestamp}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+
+              {isChatLoading && (
+                <View style={styles.chatMessageRow}>
+                  <View style={styles.chatMiniAvatar}>
+                    <BotAvatar size={18} />
+                  </View>
+                  <View style={[styles.chatBubble, styles.chatBubbleAssistant]}>
+                    <Text style={styles.chatBubbleText}>Mon đang suy nghĩ cho bạn...</Text>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.chatSuggestionsLabel}>Câu hỏi gợi ý:</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chatSuggestionsRow}>
+                {chatSuggestions.map((item) => (
+                  <TouchableOpacity
+                    key={item}
+                    style={styles.chatSuggestionChip}
+                    onPress={() => handleQuickChatPrompt(item)}
+                  >
+                    <Text style={styles.chatSuggestionChipText}>{item}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              {!!chatHighlight && (
+                <View style={styles.chatDetailCard}>
+                  <View style={styles.chatDetailCardIcon}>
+                    <Ionicons name="flash-outline" size={18} color="#FFFFFF" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.chatDetailCardTitle}>Gợi ý nhanh từ AI</Text>
+                    <Text style={styles.chatDetailCardText}>{chatHighlight}</Text>
+                    <TouchableOpacity onPress={() => setActiveTab('transactions')}>
+                      <Text style={styles.chatDetailCardLink}>Xem giao dịch →</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={[styles.chatComposer, { paddingBottom: Math.max(16, insets.bottom) }]}>
+              <TextInput
+                style={styles.chatInput}
+                placeholder={`Hỏi ${botFullName} bất cứ điều gì...`}
+                placeholderTextColor="#94A3B8"
+                value={chatInput}
+                onChangeText={setChatInput}
+                multiline
+                returnKeyType="send"
+                blurOnSubmit={false}
+                onFocus={() => setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 120)}
+              />
+              <TouchableOpacity
+                style={[styles.chatSendBtn, (!chatInput.trim() || isChatLoading) && styles.chatSendBtnDisabled]}
+                disabled={!chatInput.trim() || isChatLoading}
+                onPress={() => sendChatMessage()}
+              >
+                <Ionicons name="paper-plane-outline" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      )}
+
+      <Modal visible={isVoiceModalOpen} transparent animationType="fade" onRequestClose={closeVoiceModal}>
+        <View style={styles.voiceModalBackdrop}>
+          <View style={styles.voiceModalCard}>
+            <TouchableOpacity style={styles.voiceModalClose} onPress={closeVoiceModal}>
+              <Ionicons name="close" size={22} color="#0F172A" />
+            </TouchableOpacity>
+
+            <View style={styles.voiceModalAvatarRing}>
+              <Animated.View
+                style={[
+                  styles.voiceModalAvatarPulse,
+                  {
+                    opacity: voicePulseAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.15, 0.35],
+                    }),
+                    transform: [
+                      {
+                        scale: voicePulseAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [1, 1.15],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+              <View style={styles.voiceModalAvatarInner}>
+                <BotAvatar size={48} />
+              </View>
+            </View>
+
+            <Text style={styles.voiceModalTitle}>
+              {isRecordingVoice ? 'Đang lắng nghe bạn...' : 'Nhấn micro để nói chuyện'}
+            </Text>
+            <Text style={styles.voiceModalSubtitle}>💭 Trò chuyện với {botShortName} bằng giọng nói</Text>
+
+            <View style={styles.voiceBarsRow}>
+              {Array.from({ length: 12 }).map((_, index) => (
+                <Animated.View
+                  key={`voice-bar-${index}`}
+                  style={[
+                    styles.voiceBar,
+                    {
+                      opacity: isRecordingVoice ? 0.45 + (index % 3) * 0.18 : 0.35,
+                      height: isRecordingVoice ? 18 + (index % 4) * 6 : 12 + (index % 2) * 4,
+                    },
+                  ]}
+                />
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.voiceMicButton,
+                isRecordingVoice && styles.voiceMicButtonActive,
+                isVoiceBusy && styles.voiceMicButtonDisabled,
+              ]}
+              onPress={toggleVoiceRecording}
+              disabled={isVoiceBusy}
+              activeOpacity={0.9}
+            >
+              {isVoiceBusy ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Ionicons name={isRecordingVoice ? 'stop' : 'mic'} size={34} color="#FFFFFF" />
+              )}
+            </TouchableOpacity>
+
+            <Text style={styles.voiceHintLabel}>💡 Bạn có thể hỏi:</Text>
+            <View style={styles.voicePromptList}>
+              {[
+                '“Hôm nay tôi chi 50k cho cà phê”',
+                '“Cho tôi xem báo cáo chi tiêu”',
+                '“Cho tôi lời khuyên tiết kiệm”',
+              ].map((item) => (
+                <View key={item} style={styles.voicePromptItem}>
+                  <Text style={styles.voicePromptItemText}>{item}</Text>
+                </View>
+              ))}
+            </View>
+
+            <Text style={styles.voiceHintStatus}>{voiceHintText}</Text>
+          </View>
+        </View>
+      </Modal>
 
       {isQuickAddOpen && (
         <View style={styles.overlay} pointerEvents="box-none">
@@ -6590,6 +7434,751 @@ const styles = StyleSheet.create({
   iconChoiceActive: {
     borderColor: '#08B0C9',
     backgroundColor: '#E0F7FA',
+  },
+  chatLaunchCard: {
+    marginTop: 20,
+    borderRadius: 22,
+    padding: 18,
+    backgroundColor: '#12B8C8',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    shadowColor: '#0891B2',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    elevation: 8,
+  },
+  chatLaunchAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatLaunchContent: {
+    flex: 1,
+    gap: 4,
+  },
+  chatLaunchTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatLaunchSubtitle: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  homeRecentSection: {
+    marginTop: 22,
+    gap: 14,
+  },
+  homeRecentTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  homeRecentList: {
+    gap: 12,
+  },
+  homeRecentItem: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  homeRecentInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  homeRecentName: {
+    fontSize: 15,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  homeRecentMeta: {
+    fontSize: 13,
+    color: '#94A3B8',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  homeRecentAmount: {
+    fontSize: 15,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  homeRecentAmountIncome: {
+    color: '#16A34A',
+  },
+  homeRecentAmountExpense: {
+    color: '#EF4444',
+  },
+  homeRecentEmptyCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 18,
+    alignItems: 'center',
+  },
+  homeRecentEmptyText: {
+    color: '#94A3B8',
+    fontSize: 14,
+  },
+  aiInsightCard: {
+    marginTop: 22,
+    marginBottom: 8,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    backgroundColor: '#ECFEFF',
+    padding: 22,
+    paddingTop: 26,
+    flexDirection: 'row',
+    gap: 16,
+    overflow: 'visible',
+  },
+  aiInsightBadgeWrap: {
+    position: 'absolute',
+    right: 12,
+    top: -14,
+    alignItems: 'center',
+    gap: 8,
+    zIndex: 3,
+  },
+  aiInsightFloatingAvatar: {
+    width: 84,
+    height: 84,
+    borderRadius: 24,
+    backgroundColor: '#12B8C8',
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0891B2',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  aiInsightFloatingBadge: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#A5F3FC',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    minWidth: 88,
+    alignItems: 'center',
+    shadowColor: '#0891B2',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  aiInsightFloatingBadgeText: {
+    color: '#334155',
+    fontSize: 13,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  aiInsightIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#08B0C9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  aiInsightContent: {
+    flex: 1,
+    gap: 8,
+    paddingRight: 88,
+  },
+  aiInsightTitle: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  aiInsightText: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: '#334155',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  aiInsightLink: {
+    color: '#0284C7',
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatMenuOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 30,
+    justifyContent: 'flex-end',
+    paddingHorizontal: 20,
+    paddingBottom: 98,
+  },
+  chatMenuCard: {
+    alignSelf: 'flex-end',
+    width: '100%',
+    maxWidth: 320,
+    backgroundColor: '#F8FEFF',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#8DECF8',
+    padding: 16,
+    gap: 14,
+    shadowColor: '#0891B2',
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.18,
+    shadowRadius: 22,
+    elevation: 10,
+  },
+  chatMenuHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  chatMenuHeaderAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  chatMenuName: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatMenuCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatMenuBubble: {
+    backgroundColor: '#12B8C8',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  chatMenuBubbleText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    lineHeight: 22,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatMenuGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  chatMenuAction: {
+    width: '47%',
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  chatMenuActionText: {
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatModalWrapper: {
+    flex: 1,
+    backgroundColor: '#F8FCFE',
+  },
+  chatScreenPanel: {
+    flex: 1,
+    backgroundColor: '#F8FCFE',
+  },
+  chatScreenHero: {
+    backgroundColor: '#12B8C8',
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 18,
+  },
+  chatScreenHeroTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  chatScreenHeroIdentity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  chatScreenHeroAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatScreenHeroName: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Bold',
+      android: 'sans-serif-bold',
+      default: 'Avenir Next',
+    }),
+  },
+  chatScreenHeroSubtitle: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 14,
+    marginTop: 4,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chatScreenCloseBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatMessagesScroll: {
+    flex: 1,
+  },
+  chatMessagesContent: {
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 28,
+    gap: 14,
+  },
+  chatMessageRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+  },
+  chatMessageRowAssistant: {
+    justifyContent: 'flex-start',
+  },
+  chatMessageRowUser: {
+    justifyContent: 'flex-end',
+  },
+  chatMiniAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: '#8DECF8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  chatBubble: {
+    maxWidth: '84%',
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 8,
+  },
+  chatBubbleAssistant: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#D7EEF2',
+  },
+  chatBubbleUser: {
+    backgroundColor: '#12B8C8',
+  },
+  chatBubbleText: {
+    color: '#0F172A',
+    fontSize: 15,
+    lineHeight: 24,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chatBubbleTextUser: {
+    color: '#FFFFFF',
+  },
+  chatHighlightBox: {
+    backgroundColor: '#ECFEFF',
+    borderRadius: 14,
+    padding: 10,
+  },
+  chatHighlightText: {
+    color: '#0F766E',
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatBubbleTime: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chatBubbleTimeUser: {
+    color: 'rgba(255,255,255,0.8)',
+    alignSelf: 'flex-end',
+  },
+  chatSuggestionsLabel: {
+    marginTop: 6,
+    color: '#64748B',
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatSuggestionsRow: {
+    gap: 10,
+    paddingRight: 20,
+    paddingTop: 8,
+  },
+  chatSuggestionChip: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#D7EEF2',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  chatSuggestionChipText: {
+    color: '#0F172A',
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatDetailCard: {
+    marginTop: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    backgroundColor: '#ECFEFF',
+    padding: 16,
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  chatDetailCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#08B0C9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatDetailCardTitle: {
+    color: '#0F172A',
+    fontSize: 15,
+    marginBottom: 6,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatDetailCardText: {
+    color: '#334155',
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chatDetailCardLink: {
+    marginTop: 8,
+    color: '#0284C7',
+    fontSize: 14,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  chatComposer: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  chatInput: {
+    flex: 1,
+    minHeight: 46,
+    maxHeight: 110,
+    borderRadius: 16,
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    color: '#0F172A',
+    fontSize: 15,
+    textAlignVertical: 'top',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  chatSendBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 18,
+    backgroundColor: '#08B0C9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatSendBtnDisabled: {
+    opacity: 0.5,
+  },
+  voiceModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  voiceModalCard: {
+    width: '100%',
+    maxWidth: 500,
+    backgroundColor: '#F8FEFF',
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: '#8DECF8',
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 26,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.18,
+    shadowRadius: 26,
+    elevation: 12,
+  },
+  voiceModalClose: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  voiceModalAvatarRing: {
+    width: 124,
+    height: 124,
+    borderRadius: 62,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+  },
+  voiceModalAvatarPulse: {
+    position: 'absolute',
+    width: 124,
+    height: 124,
+    borderRadius: 62,
+    backgroundColor: '#12B8C8',
+  },
+  voiceModalAvatarInner: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    borderWidth: 5,
+    borderColor: '#12B8C8',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  voiceModalTitle: {
+    fontSize: 28,
+    color: '#0F172A',
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-DemiBold',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  voiceModalSubtitle: {
+    marginTop: 8,
+    color: '#64748B',
+    fontSize: 16,
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  voiceBarsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 28,
+    minHeight: 40,
+  },
+  voiceBar: {
+    width: 7,
+    borderRadius: 999,
+    backgroundColor: '#CBD5E1',
+  },
+  voiceMicButton: {
+    marginTop: 28,
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  voiceMicButtonActive: {
+    backgroundColor: '#EF4444',
+  },
+  voiceMicButtonDisabled: {
+    opacity: 0.7,
+  },
+  voiceHintLabel: {
+    marginTop: 26,
+    color: '#64748B',
+    fontSize: 16,
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
+  },
+  voicePromptList: {
+    marginTop: 14,
+    width: '100%',
+    gap: 10,
+  },
+  voicePromptItem: {
+    borderRadius: 16,
+    backgroundColor: '#F0FDFA',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  voicePromptItemText: {
+    color: '#475569',
+    fontSize: 15,
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Regular',
+      android: 'sans-serif',
+      default: 'Avenir Next',
+    }),
+  },
+  voiceHintStatus: {
+    marginTop: 18,
+    color: '#0284C7',
+    fontSize: 14,
+    textAlign: 'center',
+    fontFamily: Platform.select({
+      ios: 'AvenirNext-Medium',
+      android: 'sans-serif-medium',
+      default: 'Avenir Next',
+    }),
   },
   dateRow: {
     flexDirection: 'row',

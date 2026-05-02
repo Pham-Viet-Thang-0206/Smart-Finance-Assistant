@@ -385,8 +385,358 @@ const classifyTransaction = async ({ text, type, imageBase64, imageMimeType }) =
     return { category: 'khác', type: type || 'expense', confidence: 0 };
   }
 };
+
+const formatCurrency = (value) =>
+  `${Number(value || 0).toLocaleString('vi-VN')} đ`;
+
+const getMonthBounds = () => {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return { now, start, end };
+};
+
+const buildExpenseBreakdown = (transactions) => {
+  const totals = new Map();
+  transactions
+    .filter((item) => item.type === 'expense')
+    .forEach((item) => {
+      const key = String(item.category || item.ai_category || 'khác').trim() || 'khác';
+      totals.set(key, (totals.get(key) || 0) + Number(item.amount || 0));
+    });
+
+  return Array.from(totals.entries())
+    .map(([category, amount]) => ({ category, amount }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 5);
+};
+
+const buildChatFallback = ({ message, financeContext, botName }) => {
+  const lower = String(message || '').toLowerCase();
+  const topExpense = financeContext.topExpenseCategories?.[0];
+
+  if (lower.includes('tiết kiệm') || lower.includes('save')) {
+    return {
+      reply:
+        financeContext.remainingBudget > 0
+          ? `${botName} thấy bạn còn khoảng ${formatCurrency(financeContext.remainingBudget)} ngân sách linh hoạt trong tháng này. Ưu tiên giữ phần đó cho mục tiêu "${financeContext.topGoal?.name || 'tiết kiệm'}".`
+          : `${botName} thấy bạn đã dùng gần hết ngân sách tháng này. Tuần tới nên giảm danh mục ${topExpense?.category || 'chi tiêu không thiết yếu'} trước tiên.`,
+      suggestions: [
+        'Phân tích chi tiêu tháng này',
+        'Gợi ý kế hoạch tiết kiệm',
+        'Tôi nên cắt giảm khoản nào?',
+      ],
+      intent: 'advice',
+      highlight: topExpense
+        ? `Danh mục chi nhiều nhất hiện tại là ${topExpense.category}: ${formatCurrency(topExpense.amount)}.`
+        : 'Chưa có đủ dữ liệu chi tiêu để phân tích sâu.',
+    };
+  }
+
+  if (
+    lower.includes('chi tiêu') ||
+    lower.includes('bao cáo') ||
+    lower.includes('báo cáo') ||
+    lower.includes('report')
+  ) {
+    return {
+      reply:
+        financeContext.monthExpense > 0
+          ? `Tháng này bạn đã chi ${formatCurrency(financeContext.monthExpense)} và thu ${formatCurrency(financeContext.monthIncome)}. ${topExpense ? `Khoản lớn nhất là ${topExpense.category}.` : ''}`
+          : `${botName} chưa thấy giao dịch chi tiêu nào trong tháng này. Bạn có thể thêm giao dịch để mình phân tích chính xác hơn.`,
+      suggestions: [
+        'Khoản nào đang tăng mạnh?',
+        'Tôi còn bao nhiêu ngân sách?',
+        'Gợi ý tiết kiệm cho tôi',
+      ],
+      intent: 'report',
+      highlight:
+        financeContext.monthExpense > 0
+          ? `Ngân sách còn lại: ${formatCurrency(financeContext.remainingBudget)}.`
+          : 'Bắt đầu bằng một giao dịch thủ công hoặc quét hóa đơn.',
+    };
+  }
+
+  if (lower.includes('mục tiêu') || lower.includes('goal')) {
+    return {
+      reply: financeContext.topGoal
+        ? `Mục tiêu gần nhất của bạn là "${financeContext.topGoal.name}" với tiến độ ${financeContext.topGoal.progressPct}%. Nếu muốn, ${botName} có thể giúp bạn chia nhỏ số tiền cần tiết kiệm theo tuần.`
+        : `${botName} chưa thấy mục tiêu tiết kiệm nào. Bạn có thể thêm mục tiêu mới để mình theo dõi tiến độ giúp bạn.`,
+      suggestions: [
+        'Lập kế hoạch cho mục tiêu của tôi',
+        'Tôi nên tiết kiệm bao nhiêu mỗi tuần?',
+        'Phân tích chi tiêu tháng này',
+      ],
+      intent: 'goal',
+      highlight: financeContext.topGoal
+        ? `Bạn đã tích lũy ${formatCurrency(financeContext.topGoal.currentAmount)} / ${formatCurrency(financeContext.topGoal.targetAmount)}.`
+        : 'Tạo mục tiêu mới để nhận nhắc nhở và gợi ý cá nhân hóa.',
+    };
+  }
+
+  return {
+    reply: `${botName} đang sẵn sàng hỗ trợ. Bạn có thể hỏi mình về chi tiêu, mục tiêu tiết kiệm, ngân sách tháng này hoặc nhờ gợi ý cắt giảm chi phí.`,
+    suggestions: [
+      'Phân tích chi tiêu của tôi',
+      'Làm sao để tiết kiệm?',
+      'Tôi còn bao nhiêu ngân sách?',
+    ],
+    intent: 'general',
+    highlight: financeContext.monthExpense > 0
+      ? `Hiện tại bạn đã chi ${formatCurrency(financeContext.monthExpense)} trong tháng này.`
+      : 'Chưa có nhiều dữ liệu giao dịch trong tháng này.',
+  };
+};
+
+const buildFinanceContext = async (user) => {
+  const [onboardingRows] = await pool.execute(
+    `SELECT income_monthly, ai_name, ai_tone, needs_pct, wants_pct, savings_pct
+     FROM user_onboarding
+     WHERE user_id = ?`,
+    [user.id]
+  );
+  const onboarding = onboardingRows?.[0] || null;
+
+  const [transactionRows] = await pool.execute(
+    `SELECT id, type, amount, description, category, ai_category, occurred_at
+     FROM user_transactions
+     WHERE user_id = ?
+     ORDER BY occurred_at DESC
+     LIMIT 50`,
+    [user.id]
+  );
+
+  const [goalRows] = await pool.execute(
+    `SELECT id, name, icon, target_amount, current_amount, end_date
+     FROM savings_goals
+     WHERE user_id = ?
+     ORDER BY end_date ASC`,
+    [user.id]
+  );
+
+  const { now, start, end } = getMonthBounds();
+  const currentMonthTransactions = transactionRows.filter((item) => {
+    const occurredAt = item?.occurred_at ? new Date(item.occurred_at) : null;
+    if (!occurredAt || Number.isNaN(occurredAt.getTime())) return false;
+    return occurredAt >= start && occurredAt < end;
+  });
+
+  const monthIncome = currentMonthTransactions
+    .filter((item) => item.type === 'income')
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthExpense = currentMonthTransactions
+    .filter((item) => item.type === 'expense')
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+  const expectedIncome = Number(onboarding?.income_monthly || monthIncome || 0);
+  const flexibleBudgetPct = Number(onboarding?.needs_pct || 50) + Number(onboarding?.wants_pct || 30);
+  const monthlyBudget = expectedIncome > 0 ? (expectedIncome * flexibleBudgetPct) / 100 : 0;
+  const remainingBudget = Math.max(0, monthlyBudget - monthExpense);
+  const topExpenseCategories = buildExpenseBreakdown(currentMonthTransactions);
+
+  const normalizedGoals = goalRows.map((goal) => {
+    const targetAmount = Number(goal.target_amount || 0);
+    const currentAmount = Number(goal.current_amount || 0);
+    const progressPct = targetAmount > 0 ? Math.min(100, Math.round((currentAmount / targetAmount) * 100)) : 0;
+    return {
+      id: goal.id,
+      name: goal.name,
+      icon: goal.icon,
+      targetAmount,
+      currentAmount,
+      progressPct,
+      endDate: goal.end_date,
+    };
+  });
+
+  return {
+    monthLabel: `tháng ${now.getMonth() + 1}/${now.getFullYear()}`,
+    onboarding,
+    recentTransactions: transactionRows.slice(0, 8).map((item) => ({
+      type: item.type,
+      amount: Number(item.amount || 0),
+      category: item.category || item.ai_category || 'khác',
+      description: item.description || '',
+      occurredAt: item.occurred_at,
+    })),
+    topExpenseCategories,
+    goals: normalizedGoals,
+    topGoal: normalizedGoals[0] || null,
+    monthIncome,
+    monthExpense,
+    monthlyBudget,
+    remainingBudget,
+    expectedIncome,
+  };
+};
+
+const transcribeAudioWithGemini = async ({
+  audioBase64,
+  audioMimeType,
+  languageCode = 'vi-VN',
+}) => {
+  if (!GEMINI_API_KEY || !audioBase64) return '';
+
+  try {
+    const response = await fetch(
+      `${GEMINI_BASE_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: audioMimeType || 'audio/m4a',
+                    data: audioBase64,
+                  },
+                },
+                {
+                  text:
+                    `Transcribe this audio exactly as spoken in ${languageCode}. ` +
+                    `Return only the transcript. If the audio is empty or unclear, return an empty string.`,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+          },
+        }),
+      }
+    );
+
+    const data = await response.json();
+    const transcript = String(data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    return transcript;
+  } catch (error) {
+    return '';
+  }
+};
+
+const generateChatReply = async ({ message, history, financeContext, user }) => {
+  const botName = financeContext.onboarding?.ai_name || 'MoneeBot';
+  if (!GEMINI_API_KEY || !message?.trim()) {
+    return buildChatFallback({ message, financeContext, botName });
+  }
+
+  const prompt = [
+    `Bạn là ${botName}, trợ lý tài chính AI của người dùng ${user.full_name || user.email}.`,
+    'Trả lời bằng tiếng Việt, ngắn gọn, thực dụng, 2-5 câu nếu không cần liệt kê.',
+    'Giọng điệu phải thân thiện, hiện đại, hữu ích. Không bịa dữ liệu không có trong context.',
+    'Nếu người dùng hỏi vượt ngoài dữ liệu tài chính hiện có, hãy nói rõ giới hạn rồi vẫn đưa gợi ý hợp lý.',
+    'Luôn ưu tiên dữ liệu thật của người dùng trong context dưới đây.',
+    '',
+    `Context tài chính: ${JSON.stringify(financeContext)}`,
+    `Lịch sử chat gần đây: ${JSON.stringify(history || [])}`,
+    `Tin nhắn mới nhất của người dùng: ${message}`,
+    '',
+    'Hãy trả về JSON theo schema đã yêu cầu.',
+  ].join('\n');
+
+  try {
+    const response = await fetch(
+      `${GEMINI_BASE_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: 'object',
+              properties: {
+                reply: { type: 'string' },
+                suggestions: {
+                  type: 'array',
+                  items: { type: 'string' },
+                },
+                intent: {
+                  type: 'string',
+                  enum: ['general', 'report', 'advice', 'goal', 'transaction'],
+                },
+                highlight: { type: 'string' },
+              },
+              required: ['reply', 'suggestions', 'intent', 'highlight'],
+            },
+            temperature: 0.45,
+          },
+        }),
+      }
+    );
+
+    const data = await response.json();
+    const outputText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const parsed = JSON.parse(outputText);
+    return {
+      reply: String(parsed.reply || '').trim(),
+      suggestions: Array.isArray(parsed.suggestions)
+        ? parsed.suggestions.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4)
+        : [],
+      intent: parsed.intent || 'general',
+      highlight: String(parsed.highlight || '').trim(),
+    };
+  } catch (error) {
+    return buildChatFallback({ message, financeContext, botName });
+  }
+};
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { email, message, history } = req.body ?? {};
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email là bắt buộc.' });
+    }
+    if (!String(message || '').trim()) {
+      return res.status(400).json({ message: 'Nội dung chat không được để trống.' });
+    }
+
+    const normalizedEmail = normalizeEmail(String(email));
+    const [users] = await pool.execute(
+      'SELECT id, full_name, email FROM users WHERE email = ?',
+      [normalizedEmail]
+    );
+    const user = users?.[0];
+    if (!user) {
+      return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
+    }
+
+    const financeContext = await buildFinanceContext(user);
+    const chatReply = await generateChatReply({
+      message: String(message),
+      history: Array.isArray(history) ? history.slice(-8) : [],
+      financeContext,
+      user,
+    });
+
+    return res.json({
+      reply: chatReply.reply,
+      suggestions: chatReply.suggestions,
+      intent: chatReply.intent,
+      highlight: chatReply.highlight,
+      botName: financeContext.onboarding?.ai_name || 'MoneeBot',
+      context: {
+        monthIncome: financeContext.monthIncome,
+        monthExpense: financeContext.monthExpense,
+        monthlyBudget: financeContext.monthlyBudget,
+        remainingBudget: financeContext.remainingBudget,
+        topGoal: financeContext.topGoal,
+        topExpenseCategories: financeContext.topExpenseCategories,
+      },
+    });
+  } catch (error) {
+    console.error('Chat API error:', error);
+    return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
 });
 
 app.post('/api/auth/register', async (req, res) => {
@@ -691,7 +1041,11 @@ app.post('/api/transactions', async (req, res) => {
           languageCode: languageCode || 'vi-VN',
         });
       } catch (error) {
-        normalizedRawText = '';
+        normalizedRawText = await transcribeAudioWithGemini({
+          audioBase64,
+          audioMimeType,
+          languageCode: languageCode || 'vi-VN',
+        });
       }
     }
     const textForAI = `${normalizedDescription} ${normalizedRawText}`.trim();
@@ -776,11 +1130,28 @@ app.post('/api/speech/transcribe', async (req, res) => {
     if (!audioBase64) {
       return res.status(400).json({ message: 'Thiếu dữ liệu âm thanh.' });
     }
-    const text = await transcribeAudio({
-      audioBase64,
-      mimeType: audioMimeType,
-      languageCode: languageCode || 'vi-VN',
-    });
+    let text = '';
+    try {
+      text = await transcribeAudio({
+        audioBase64,
+        mimeType: audioMimeType,
+        languageCode: languageCode || 'vi-VN',
+      });
+    } catch (error) {
+      text = '';
+    }
+
+    if (!text) {
+      text = await transcribeAudioWithGemini({
+        audioBase64,
+        audioMimeType,
+        languageCode: languageCode || 'vi-VN',
+      });
+    }
+
+    if (!text) {
+      return res.status(422).json({ message: 'Không nhận diện được giọng nói.' });
+    }
     return res.json({ text: text || '' });
   } catch (error) {
     console.error('Speech transcribe error:', error);

@@ -2,10 +2,16 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
 const getDevHost = () => {
+  const expoConfig = Constants.expoConfig as (typeof Constants.expoConfig & {
+    debuggerHost?: string;
+  }) | null;
+  const manifest = (Constants as typeof Constants & {
+    manifest?: { debuggerHost?: string };
+  }).manifest;
   const debuggerHost =
-    Constants.expoConfig?.hostUri ??
-    Constants.expoConfig?.debuggerHost ??
-    Constants.manifest?.debuggerHost ??
+    expoConfig?.hostUri ??
+    expoConfig?.debuggerHost ??
+    manifest?.debuggerHost ??
     '';
 
   const host = debuggerHost.split(':')[0];
@@ -26,5 +32,5 @@ export const API_BASE_URL = (() => {
   if (envUrl) {
     return envUrl;
   }
-  return 'http://10.170.15.47:4000';
+  return getDevHost() || 'http://127.0.0.1:4000';
 })();
