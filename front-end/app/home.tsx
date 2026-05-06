@@ -181,6 +181,37 @@ export default function HomeScreen() {
   const webChunksRef = useRef<Blob[]>([]);
   const voicePulseAnim = useRef(new Animated.Value(0)).current;
 
+  const fabPanY = useRef(new Animated.Value(0)).current;
+  const lastFabPanY = useRef(0);
+  const { height: screenHeight } = Dimensions.get('window');
+
+  const fabPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 5,
+        onPanResponderGrant: () => {
+          fabPanY.setOffset(lastFabPanY.current);
+          fabPanY.setValue(0);
+        },
+        onPanResponderMove: Animated.event([null, { dy: fabPanY }], { useNativeDriver: false }),
+        onPanResponderRelease: () => {
+          fabPanY.flattenOffset();
+          let currentY = Number.parseFloat(JSON.stringify(fabPanY));
+          const maxY = screenHeight / 2 - 100;
+          const minY = -screenHeight / 2 + 100;
+          if (currentY > maxY) currentY = maxY;
+          if (currentY < minY) currentY = minY;
+          Animated.spring(fabPanY, {
+            toValue: currentY,
+            useNativeDriver: false,
+          }).start(() => {
+            lastFabPanY.current = currentY;
+          });
+        },
+      }),
+    [fabPanY, screenHeight]
+  );
+
   const GOAL_ICONS = ['💰', '✈️', '🏠', '🚗', '💻', '📱', '🎓', '💍', '🏖️', '🎮', '📚', '⌚', '🎸', '🏋️', '🎯'];
   const botShortName = 'Mon';
   const botFullName = onboardingData?.aiName || 'MoneeBot';
@@ -2269,22 +2300,6 @@ export default function HomeScreen() {
               activeOpacity={0.9}
               onPress={() => setIsChatMenuOpen(true)}
             >
-              <View style={styles.aiInsightBadgeWrap}>
-                <TouchableOpacity
-                  style={styles.aiInsightFloatingAvatar}
-                  activeOpacity={0.9}
-                  onPress={() => setIsChatMenuOpen(true)}
-                >
-                  <BotAvatar size={46} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.aiInsightFloatingBadge}
-                  activeOpacity={0.9}
-                  onPress={() => setIsChatMenuOpen(true)}
-                >
-                  <Text style={styles.aiInsightFloatingBadgeText}>{botShortName}</Text>
-                </TouchableOpacity>
-              </View>
               <View style={styles.aiInsightIcon}>
                 <Ionicons name="flash-outline" size={22} color="#FFFFFF" />
               </View>
@@ -4481,6 +4496,31 @@ export default function HomeScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {!isChatMenuOpen && !isChatScreenOpen && !isVoiceModalOpen && (
+        <Animated.View
+          {...fabPanResponder.panHandlers}
+          style={[
+            styles.globalFabWrap,
+            { transform: [{ translateY: fabPanY }] }
+          ]}
+        >
+          <TouchableOpacity
+            style={styles.aiInsightFloatingAvatar}
+            activeOpacity={0.9}
+            onPress={() => setIsChatMenuOpen(true)}
+          >
+            <BotAvatar size={46} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.aiInsightFloatingBadge}
+            activeOpacity={0.9}
+            onPress={() => setIsChatMenuOpen(true)}
+          >
+            <Text style={styles.aiInsightFloatingBadgeText}>{botShortName}</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
     </SafeAreaView>
   );
 }
@@ -7566,13 +7606,13 @@ const styles = StyleSheet.create({
     gap: 16,
     overflow: 'visible',
   },
-  aiInsightBadgeWrap: {
+  globalFabWrap: {
     position: 'absolute',
     right: 12,
-    top: -14,
+    top: '35%',
     alignItems: 'center',
     gap: 8,
-    zIndex: 3,
+    zIndex: 9999,
   },
   aiInsightFloatingAvatar: {
     width: 84,

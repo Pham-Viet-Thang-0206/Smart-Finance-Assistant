@@ -502,7 +502,7 @@ const buildFinanceContext = async (user) => {
      FROM user_transactions
      WHERE user_id = ?
      ORDER BY occurred_at DESC
-     LIMIT 50`,
+     LIMIT 1000`,
     [user.id]
   );
 
@@ -552,6 +552,13 @@ const buildFinanceContext = async (user) => {
   return {
     monthLabel: `tháng ${now.getMonth() + 1}/${now.getFullYear()}`,
     onboarding,
+    allTransactions: transactionRows.map((item) => ({
+      type: item.type,
+      amount: Number(item.amount || 0),
+      category: item.category || item.ai_category || 'khác',
+      desc: item.description || '',
+      date: item.occurred_at,
+    })),
     recentTransactions: transactionRows.slice(0, 8).map((item) => ({
       type: item.type,
       amount: Number(item.amount || 0),
@@ -625,11 +632,9 @@ const generateChatReply = async ({ message, history, financeContext, user }) => 
 
   const prompt = [
     `Bạn là ${botName}, trợ lý tài chính AI của người dùng ${user.full_name || user.email}.`,
-    'Trả lời bằng tiếng Việt, ngắn gọn, thực dụng, 2-5 câu nếu không cần liệt kê.',
-    'Giọng điệu phải thân thiện, hiện đại, hữu ích. Không bịa dữ liệu không có trong context.',
-    'Nếu người dùng hỏi vượt ngoài dữ liệu tài chính hiện có, hãy nói rõ giới hạn rồi vẫn đưa gợi ý hợp lý.',
-    'Luôn ưu tiên dữ liệu thật của người dùng trong context dưới đây.',
-    '',
+    'Trả lời bằng tiếng Việt, thân thiện, hiện đại. Dùng toàn bộ dữ liệu giao dịch trong context để tính toán chính xác số dư, tổng thu chi khi người dùng yêu cầu phân tích.',
+    'Nếu người dùng hỏi phân tích nhưng chưa rõ thời gian, hãy hỏi lại họ muốn xem tháng nào.',
+    'ĐẶC BIỆT LƯU Ý: Nếu người dùng báo cáo một giao dịch mới (VD: "Hôm nay tôi mua bún bò 30k"), hãy đặt intent="transaction" và điền vào extractedTransaction. Mục category phải thuộc danh sách: ăn uống, di chuyển, mua sắm, giải trí, hóa đơn, sức khỏe, giáo dục, lương, thưởng, đầu tư, khác.',
     `Context tài chính: ${JSON.stringify(financeContext)}`,
     `Lịch sử chat gần đây: ${JSON.stringify(history || [])}`,
     `Tin nhắn mới nhất của người dùng: ${message}`,
@@ -660,10 +665,19 @@ const generateChatReply = async ({ message, history, financeContext, user }) => 
                   enum: ['general', 'report', 'advice', 'goal', 'transaction'],
                 },
                 highlight: { type: 'string' },
+                extractedTransaction: {
+                  type: 'object',
+                  properties: {
+                    amount: { type: 'number' },
+                    category: { type: 'string' },
+                    description: { type: 'string' },
+                    type: { type: 'string', enum: ['expense', 'income'] }
+                  }
+                }
               },
               required: ['reply', 'suggestions', 'intent', 'highlight'],
             },
-            temperature: 0.45,
+            temperature: 0.2,
           },
         }),
       }
@@ -679,6 +693,7 @@ const generateChatReply = async ({ message, history, financeContext, user }) => 
         : [],
       intent: parsed.intent || 'general',
       highlight: String(parsed.highlight || '').trim(),
+      extractedTransaction: parsed.extractedTransaction || null,
     };
   } catch (error) {
     return buildChatFallback({ message, financeContext, botName });
@@ -717,6 +732,27 @@ app.post('/api/chat', async (req, res) => {
       financeContext,
       user,
     });
+
+    if (chatReply.intent === 'transaction' && chatReply.extractedTransaction) {
+      const { amount, category, description, type } = chatReply.extractedTransaction;
+      if (amount) {
+        const now = new Date();
+        await pool.execute(
+          `INSERT INTO user_transactions (user_id, type, amount, description, category, source, occurred_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'chat', ?, ?, ?)`,
+          [
+            user.id,
+            type || 'expense',
+            amount,
+            description || '',
+            category || 'khác',
+            now,
+            now,
+            now
+          ]
+        );
+      }
+    }
 
     return res.json({
       reply: chatReply.reply,

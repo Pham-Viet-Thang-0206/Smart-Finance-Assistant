@@ -34,3 +34,14 @@ export const API_BASE_URL = (() => {
   }
   return getDevHost() || 'http://127.0.0.1:4000';
 })();
+
+// Patch global fetch to bypass ngrok warning
+const originalFetch = global.fetch;
+global.fetch = async (url: string | URL | Request, config?: RequestInit) => {
+  const newConfig = { ...config };
+  newConfig.headers = {
+    ...newConfig.headers,
+    'ngrok-skip-browser-warning': 'true',
+  };
+  return originalFetch(url, newConfig);
+};
