@@ -1,3 +1,8 @@
 back-end/ultra-palisade-490914-n2-1ba24669a859.json
 .env
 *.log
+temp_git_backup/
+old_home.tsx
+old_home_utf8.tsx
+front-end/diff.txt
+front-end/diff2.txt

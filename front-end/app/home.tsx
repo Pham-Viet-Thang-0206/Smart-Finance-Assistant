@@ -28,6 +28,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { API_BASE_URL } from '@/constants/api';
 import * as FileSystem from 'expo-file-system';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import { FinancialReportModal } from '../components/financial-report-modal';
 
 type ChatRole = 'assistant' | 'user';
 
@@ -40,7 +44,7 @@ type ChatMessage = {
 };
 
 function BotAvatar({ size }: { size: number }) {
-  const accent = '#15C5D8';
+  const accent = '#07B8C8';
   const innerSize = size * 0.68;
 
   return (
@@ -95,6 +99,57 @@ export default function HomeScreen() {
   const [scanQrInfo, setScanQrInfo] = useState<any | null>(null);
   const [scanNote, setScanNote] = useState('');
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
+  const formatAmountInput = useCallback((value: string) => {
+    const digits = value.replace(/[^\d]/g, '');
+    if (!digits) return '';
+    return new Intl.NumberFormat('vi-VN').format(Number(digits));
+  }, []);
+
+  const loadTransactions = useCallback(async () => {
+    if (!userEmail) {
+      setTxError('Thiếu email người dùng.');
+      return;
+    }
+    try {
+      setTxLoading(true);
+      setTxError('');
+      const response = await fetch(
+        `${apiBaseUrl}/api/transactions?email=${encodeURIComponent(userEmail)}`
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        setTxError(data?.message ?? 'Không thể tải giao dịch.');
+        setTxItems([]);
+        return;
+      }
+      // Note: Backend might return { items: [...] } or just [...]
+      const items = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
+      setTxItems(items);
+    } catch (error) {
+      console.error('Error loading transactions:', error);
+      setTxError('Lỗi kết nối máy chủ.');
+      setTxItems([]);
+    } finally {
+      setTxLoading(false);
+    }
+  }, [userEmail, apiBaseUrl]);
+
+  const loadSavingsGoals = useCallback(async () => {
+    if (!userEmail) return;
+    try {
+      setIsGoalsLoading(true);
+      const response = await fetch(`${apiBaseUrl}/api/savings-goals?email=${encodeURIComponent(userEmail)}`);
+      const data = await response.json();
+      if (response.ok) {
+        setSavingsGoals(Array.isArray(data) ? data : []);
+      }
+    } catch (error) {
+      console.error('Error loading goals:', error);
+    } finally {
+      setIsGoalsLoading(false);
+    }
+  }, [userEmail, apiBaseUrl]);
   const [isSavingTx, setIsSavingTx] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'transactions' | 'community' | 'treasure'>(
     'home'
@@ -180,6 +235,80 @@ export default function HomeScreen() {
   const webRecorderRef = useRef<any>(null);
   const webChunksRef = useRef<Blob[]>([]);
   const voicePulseAnim = useRef(new Animated.Value(0)).current;
+
+  // Report states
+  const [isReportMonthSelectOpen, setIsReportMonthSelectOpen] = useState(false);
+  const [isReportPreviewOpen, setIsReportPreviewOpen] = useState(false);
+  const [reportSelectedMonth, setReportSelectedMonth] = useState<{ year: number, month: number } | null>(null);
+  const [reportData, setReportData] = useState<any>(null);
+
+  const availableReportMonths = useMemo(() => {
+    const monthsSet = new Set<string>();
+    txItems.forEach(tx => {
+      if (tx.occurred_at) {
+        const d = new Date(tx.occurred_at);
+        monthsSet.add(`${d.getFullYear()}-${d.getMonth() + 1}`);
+      }
+    });
+    return Array.from(monthsSet).map(m => {
+      const [year, month] = m.split('-').map(Number);
+      return { year, month };
+    }).sort((a, b) => {
+      if (a.year !== b.year) return b.year - a.year;
+      return b.month - a.month;
+    });
+  }, [txItems]);
+
+  const generateReportData = (year: number, month: number) => {
+    let tIncome = 0;
+    let tExpense = 0;
+    const catMap = new Map<string, number>();
+    const monthTxs = txItems.filter(tx => {
+      if (!tx.occurred_at) return false;
+      const d = new Date(tx.occurred_at);
+      return d.getFullYear() === year && d.getMonth() + 1 === month;
+    });
+
+    monthTxs.forEach(tx => {
+      const amount = Number(tx.amount || 0);
+      if (tx.type === 'income') {
+        tIncome += amount;
+      } else {
+        tExpense += amount;
+        const cat = tx.category || 'Khác';
+        catMap.set(cat, (catMap.get(cat) || 0) + amount);
+      }
+    });
+
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const avgDaily = tExpense / daysInMonth;
+    const savings = tIncome - tExpense;
+
+    const categories = Array.from(catMap.entries()).map(([name, amount]) => ({
+      name,
+      amount,
+      percent: tExpense > 0 ? (amount / tExpense) * 100 : 0
+    })).sort((a, b) => b.amount - a.amount);
+
+    const topTxs = monthTxs.filter(t => t.type === 'expense')
+      .sort((a, b) => Number(b.amount) - Number(a.amount))
+      .slice(0, 5);
+
+    setReportData({
+      year,
+      month,
+      tIncome,
+      tExpense,
+      savings,
+      avgDaily,
+      categories,
+      topTxs,
+      monthTxs
+    });
+    setIsReportPreviewOpen(true);
+    setIsReportMonthSelectOpen(false);
+  };
+
 
   const fabPanY = useRef(new Animated.Value(0)).current;
   const lastFabPanY = useRef(0);
@@ -335,21 +464,6 @@ export default function HomeScreen() {
     } catch (error) {}
   };
 
-  const loadSavingsGoals = useCallback(async () => {
-    if (!userEmail) return;
-    setIsGoalsLoading(true);
-    try {
-      const resp = await fetch(`${API_BASE_URL}/api/savings-goals?email=${userEmail}`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setSavingsGoals(data);
-      }
-    } catch (err) {
-      console.error('Load goals err:', err);
-    } finally {
-      setIsGoalsLoading(false);
-    }
-  }, [userEmail]);
 
   const handleDeleteGoal = async (goalId: number) => {
     try {
@@ -662,9 +776,6 @@ export default function HomeScreen() {
     }, [fetchOnboarding])
   );
 
-  useEffect(() => {
-    fetchOnboarding();
-  }, [fetchOnboarding]);
   const months = useMemo(() => Array.from({ length: 12 }, (_, i) => i + 1), []);
   const { chartData, spendPercent, spendPercentRaw, fullLabels, dailyData, totalIncome, totalExpense, monthlyBudget } = useMemo(() => {
     const daysInMonth = new Date(selectedYear, selectedMonth, 0).getDate();
@@ -1144,15 +1255,6 @@ export default function HomeScreen() {
     return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
   };
 
-  const formatAmountInput = (value: string) => {
-    const digits = value.replace(/[^\d]/g, '');
-    if (!digits) return '';
-    try {
-      return new Intl.NumberFormat('vi-VN').format(Number(digits));
-    } catch (error) {
-      return digits;
-    }
-  };
 
   const formatDateInput = (text: string) => {
     const val = text.replace(/[^\d]/g, '');
@@ -1192,31 +1294,6 @@ export default function HomeScreen() {
       .trim();
   };
 
-  const loadTransactions = async () => {
-    if (!userEmail) {
-      setTxError('Thiếu email người dùng.');
-      return;
-    }
-    try {
-      setTxLoading(true);
-      setTxError('');
-      const response = await fetch(
-        `${apiBaseUrl}/api/transactions?email=${encodeURIComponent(userEmail)}`
-      );
-      const data = await response.json();
-      if (!response.ok) {
-        setTxError(data?.message ?? 'Không thể tải giao dịch.');
-        setTxItems([]);
-        return;
-      }
-      setTxItems(Array.isArray(data?.items) ? data.items : []);
-    } catch (error) {
-      setTxError('Không kết nối được máy chủ.');
-      setTxItems([]);
-    } finally {
-      setTxLoading(false);
-    }
-  };
 
   const deleteTransaction = async (id: number) => {
     if (!userEmail) {
@@ -2569,6 +2646,29 @@ export default function HomeScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+
+            {/* Báo cáo chi tiêu Button */}
+            <TouchableOpacity 
+              activeOpacity={0.8}
+              onPress={() => setIsReportMonthSelectOpen(true)}
+              style={{ marginTop: 20 }}
+            >
+              <LinearGradient
+                colors={['#0EA5E9', '#14B8A6']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.exportReportBtn}
+              >
+                <View style={styles.exportReportIconBox}>
+                  <Ionicons name="document-text" size={24} color="#0EA5E9" />
+                </View>
+                <View style={styles.exportReportTexts}>
+                  <Text style={styles.exportReportTitle}>📊 Xuất báo cáo chi tiêu</Text>
+                  <Text style={styles.exportReportSubtitle}>Xem chi tiết thu chi theo tháng</Text>
+                </View>
+                <Ionicons name="sparkles" size={20} color="#FFFFFF" style={{ marginLeft: 'auto' }} />
+              </LinearGradient>
+            </TouchableOpacity>
           </ScrollView>
         )}
       </ScrollView>
@@ -2812,7 +2912,7 @@ export default function HomeScreen() {
         <Modal visible transparent animationType="slide" onRequestClose={() => setIsChatScreenOpen(false)}>
           <KeyboardAvoidingView
             style={styles.chatModalWrapper}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
           >
             <View style={styles.chatScreenPanel}>
@@ -3166,7 +3266,7 @@ export default function HomeScreen() {
             }}
           />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.manualModalWrapper}>
             <View style={styles.manualModal}>
@@ -3358,7 +3458,7 @@ export default function HomeScreen() {
             }}
           />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.scanModalWrapper}>
             <View style={styles.scanModal}>
@@ -3522,7 +3622,7 @@ export default function HomeScreen() {
             }}
           />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.uploadModalWrapper}>
             <View style={styles.uploadModal}>
@@ -4079,7 +4179,7 @@ export default function HomeScreen() {
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable style={styles.modalBackdrop} onPress={() => setIsAddGoalModalOpen(false)} />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.manualModalWrapper}>
             <View style={styles.manualModal}>
@@ -4389,7 +4489,7 @@ export default function HomeScreen() {
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable style={styles.modalBackdrop} onPress={() => setIsDepositModalOpen(false)} />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.manualModalWrapper}>
             <View style={styles.manualModal}>
               <View style={styles.manualHeader}>
@@ -4521,6 +4621,50 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </Animated.View>
       )}
+
+      {/* Chọn tháng báo cáo Modal */}
+      {isReportMonthSelectOpen && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setIsReportMonthSelectOpen(false)}>
+          <View style={styles.overlay} pointerEvents="box-none">
+            <Pressable style={styles.modalBackdrop} onPress={() => setIsReportMonthSelectOpen(false)} />
+            <View style={styles.reportMonthModal}>
+              <View style={styles.reportModalHeader}>
+                <Text style={styles.reportModalTitle}>Chọn tháng xuất báo cáo</Text>
+                <TouchableOpacity onPress={() => setIsReportMonthSelectOpen(false)}>
+                  <Ionicons name="close" size={24} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={{ maxHeight: 300 }}>
+                {availableReportMonths.length === 0 ? (
+                  <Text style={{ textAlign: 'center', padding: 20, color: '#64748B' }}>Chưa có lịch sử chi tiêu nào.</Text>
+                ) : (
+                  availableReportMonths.map((m) => (
+                    <TouchableOpacity
+                      key={`${m.year}-${m.month}`}
+                      style={styles.reportMonthItem}
+                      onPress={() => {
+                        setReportSelectedMonth(m);
+                        generateReportData(m.year, m.month);
+                      }}
+                    >
+                      <Text style={styles.reportMonthText}>Tháng {String(m.month).padStart(2, '0')}/{m.year}</Text>
+                      <Ionicons name="chevron-forward" size={20} color="#CBD5E1" />
+                    </TouchableOpacity>
+                  ))
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* Xem trước Báo cáo Modal */}
+      <FinancialReportModal
+        visible={isReportPreviewOpen}
+        onClose={() => setIsReportPreviewOpen(false)}
+        reportData={reportData}
+        userName={currentUser?.fullName || currentUser?.full_name || 'Khách'}
+      />
     </SafeAreaView>
   );
 }
@@ -7479,7 +7623,7 @@ const styles = StyleSheet.create({
     marginTop: 20,
     borderRadius: 22,
     padding: 18,
-    backgroundColor: '#12B8C8',
+    backgroundColor: '#07B8C8',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
@@ -7618,7 +7762,7 @@ const styles = StyleSheet.create({
     width: 84,
     height: 84,
     borderRadius: 24,
-    backgroundColor: '#12B8C8',
+    backgroundColor: '#07B8C8',
     borderWidth: 4,
     borderColor: '#FFFFFF',
     alignItems: 'center',
@@ -7757,7 +7901,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   chatMenuBubble: {
-    backgroundColor: '#12B8C8',
+    backgroundColor: '#07B8C8',
     borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 14,
@@ -7802,7 +7946,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FCFE',
   },
   chatScreenHero: {
-    backgroundColor: '#12B8C8',
+    backgroundColor: '#07B8C8',
     borderBottomLeftRadius: 28,
     borderBottomRightRadius: 28,
     paddingHorizontal: 20,
@@ -7897,7 +8041,7 @@ const styles = StyleSheet.create({
     borderColor: '#D7EEF2',
   },
   chatBubbleUser: {
-    backgroundColor: '#12B8C8',
+    backgroundColor: '#07B8C8',
   },
   chatBubbleText: {
     color: '#0F172A',
@@ -8112,14 +8256,14 @@ const styles = StyleSheet.create({
     width: 124,
     height: 124,
     borderRadius: 62,
-    backgroundColor: '#12B8C8',
+    backgroundColor: '#07B8C8',
   },
   voiceModalAvatarInner: {
     width: 104,
     height: 104,
     borderRadius: 52,
     borderWidth: 5,
-    borderColor: '#12B8C8',
+    borderColor: '#07B8C8',
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
@@ -8224,4 +8368,196 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
   },
+  exportReportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 16,
+    gap: 12,
+  },
+  exportReportIconBox: {
+    width: 48,
+    height: 48,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exportReportTexts: {
+    flex: 1,
+  },
+  exportReportTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: Platform.select({ ios: 'AvenirNext-DemiBold', android: 'sans-serif-medium', default: 'Avenir Next' }),
+  },
+  exportReportSubtitle: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 12,
+    marginTop: 4,
+    fontFamily: Platform.select({ ios: 'AvenirNext-Regular', android: 'sans-serif', default: 'Avenir Next' }),
+  },
+  reportMonthModal: {
+    backgroundColor: '#FFFFFF',
+    width: '85%',
+    borderRadius: 20,
+    padding: 20,
+    alignSelf: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  reportModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  reportModalTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({ ios: 'AvenirNext-DemiBold', android: 'sans-serif-medium', default: 'Avenir Next' }),
+  },
+  reportMonthItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  reportMonthText: {
+    fontSize: 16,
+    color: '#334155',
+  },
+  reportPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  reportPreviewHeaderTitle: {
+    fontSize: 18,
+    color: '#0F172A',
+    fontFamily: Platform.select({ ios: 'AvenirNext-DemiBold', android: 'sans-serif-medium', default: 'Avenir Next' }),
+  },
+  reportDownloadBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#07B8C8',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+  },
+  reportDownloadText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  reportPreviewContent: {
+    padding: 16,
+  },
+  a4Page: {
+    backgroundColor: '#FFFFFF',
+    padding: 24,
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  a4Title: {
+    fontSize: 20,
+    color: '#07B8C8',
+    textAlign: 'center',
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  a4Subtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  a4Divider: {
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 16,
+  },
+  a4SectionTitle: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontWeight: 'bold',
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#07B8C8',
+    paddingLeft: 8,
+  },
+  a4Grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 20,
+  },
+  a4Card: {
+    width: '48%',
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  a4CardLabel: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  a4CardValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginTop: 4,
+    color: '#0F172A',
+  },
+  a4Table: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 20,
+  },
+  a4TableRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  a4TableHeader: {
+    backgroundColor: '#F1F5F9',
+  },
+  a4TableCell: {
+    fontSize: 13,
+    color: '#334155',
+  },
+  a4Insight: {
+    backgroundColor: '#ECFEFF',
+    borderWidth: 1,
+    borderColor: '#A5F3FC',
+    borderRadius: 8,
+    padding: 14,
+    gap: 6,
+    marginBottom: 20,
+  },
+  a4InsightText: {
+    fontSize: 13,
+    color: '#0F766E',
+    lineHeight: 20,
+  }
 });

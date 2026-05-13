@@ -196,7 +196,7 @@ export default function LoginScreen() {
       </View>
 
       {isIOS ? (
-        <KeyboardAvoidingView style={styles.flex} behavior="padding" keyboardVerticalOffset={12}>
+        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={12}>
           {content}
         </KeyboardAvoidingView>
       ) : (

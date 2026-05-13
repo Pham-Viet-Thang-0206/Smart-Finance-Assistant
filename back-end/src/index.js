@@ -416,11 +416,12 @@ const buildChatFallback = ({ message, financeContext, botName }) => {
   const topExpense = financeContext.topExpenseCategories?.[0];
 
   if (lower.includes('tiết kiệm') || lower.includes('save')) {
+    const reply = financeContext.remainingBudget > 0 
+      ? `Bạn còn ${formatCurrency(financeContext.remainingBudget)} ngân sách linh hoạt. Ưu tiên giữ lại để hoàn thành mục tiêu "${financeContext.topGoal?.name || 'tiết kiệm'}" nhé.`
+      : `Bạn đã dùng hết ngân sách dự kiến. Hãy tập trung cắt giảm danh mục ${topExpense?.category || 'không thiết yếu'} để đảm bảo kế hoạch tiết kiệm.`;
+    
     return {
-      reply:
-        financeContext.remainingBudget > 0
-          ? `${botName} thấy bạn còn khoảng ${formatCurrency(financeContext.remainingBudget)} ngân sách linh hoạt trong tháng này. Ưu tiên giữ phần đó cho mục tiêu "${financeContext.topGoal?.name || 'tiết kiệm'}".`
-          : `${botName} thấy bạn đã dùng gần hết ngân sách tháng này. Tuần tới nên giảm danh mục ${topExpense?.category || 'chi tiêu không thiết yếu'} trước tiên.`,
+      reply: `- ${reply}\n- Mục tiêu: ${financeContext.topGoal?.name || 'Chưa có'}\n- Tiến độ: ${financeContext.topGoal?.progressPct || 0}%`,
       suggestions: [
         'Phân tích chi tiêu tháng này',
         'Gợi ý kế hoạch tiết kiệm',
@@ -428,8 +429,8 @@ const buildChatFallback = ({ message, financeContext, botName }) => {
       ],
       intent: 'advice',
       highlight: topExpense
-        ? `Danh mục chi nhiều nhất hiện tại là ${topExpense.category}: ${formatCurrency(topExpense.amount)}.`
-        : 'Chưa có đủ dữ liệu chi tiêu để phân tích sâu.',
+        ? `Chi nhiều nhất: ${topExpense.category} (${formatCurrency(topExpense.amount)}).`
+        : 'Hãy tiếp tục ghi chép để mình phân tích sâu hơn nhé.',
     };
   }
 
@@ -439,11 +440,15 @@ const buildChatFallback = ({ message, financeContext, botName }) => {
     lower.includes('báo cáo') ||
     lower.includes('report')
   ) {
+    const report = financeContext.monthExpense > 0
+      ? `Trong ${financeContext.monthLabel}, bạn đã chi ${formatCurrency(financeContext.monthExpense)} trên tổng thu nhập ${formatCurrency(financeContext.expectedIncome)}.\n\n` +
+        `- Tổng thu: ${formatCurrency(financeContext.monthIncome)}\n` +
+        `- Tổng chi: ${formatCurrency(financeContext.monthExpense)}\n` +
+        `- Còn lại: ${formatCurrency(financeContext.remainingBudget)}\n` +
+        `${topExpense ? `- Khoản chi lớn nhất: ${topExpense.category} (${formatCurrency(topExpense.amount)})` : ''}`
+      : `Mình chưa thấy giao dịch nào trong tháng này để phân tích. Bạn hãy thêm giao dịch mới nhé.`;
     return {
-      reply:
-        financeContext.monthExpense > 0
-          ? `Tháng này bạn đã chi ${formatCurrency(financeContext.monthExpense)} và thu ${formatCurrency(financeContext.monthIncome)}. ${topExpense ? `Khoản lớn nhất là ${topExpense.category}.` : ''}`
-          : `${botName} chưa thấy giao dịch chi tiêu nào trong tháng này. Bạn có thể thêm giao dịch để mình phân tích chính xác hơn.`,
+      reply: report,
       suggestions: [
         'Khoản nào đang tăng mạnh?',
         'Tôi còn bao nhiêu ngân sách?',
@@ -453,15 +458,18 @@ const buildChatFallback = ({ message, financeContext, botName }) => {
       highlight:
         financeContext.monthExpense > 0
           ? `Ngân sách còn lại: ${formatCurrency(financeContext.remainingBudget)}.`
-          : 'Bắt đầu bằng một giao dịch thủ công hoặc quét hóa đơn.',
+          : 'Hãy bắt đầu bằng việc quét hóa đơn hoặc nhập thủ công.',
     };
   }
 
   if (lower.includes('mục tiêu') || lower.includes('goal')) {
     return {
       reply: financeContext.topGoal
-        ? `Mục tiêu gần nhất của bạn là "${financeContext.topGoal.name}" với tiến độ ${financeContext.topGoal.progressPct}%. Nếu muốn, ${botName} có thể giúp bạn chia nhỏ số tiền cần tiết kiệm theo tuần.`
-        : `${botName} chưa thấy mục tiêu tiết kiệm nào. Bạn có thể thêm mục tiêu mới để mình theo dõi tiến độ giúp bạn.`,
+        ? `Mục tiêu "${financeContext.topGoal.name}" đang đạt ${financeContext.topGoal.progressPct}%.\n\n` +
+          `- Đã tích lũy: ${formatCurrency(financeContext.topGoal.currentAmount)}\n` +
+          `- Mục tiêu: ${formatCurrency(financeContext.topGoal.targetAmount)}\n` +
+          `- Cần thêm: ${formatCurrency(financeContext.topGoal.targetAmount - financeContext.topGoal.currentAmount)}`
+        : `Bạn chưa lập mục tiêu tiết kiệm. Hãy tạo mục tiêu mới để mình đồng hành cùng bạn nhé!`,
       suggestions: [
         'Lập kế hoạch cho mục tiêu của tôi',
         'Tôi nên tiết kiệm bao nhiêu mỗi tuần?',
@@ -469,13 +477,13 @@ const buildChatFallback = ({ message, financeContext, botName }) => {
       ],
       intent: 'goal',
       highlight: financeContext.topGoal
-        ? `Bạn đã tích lũy ${formatCurrency(financeContext.topGoal.currentAmount)} / ${formatCurrency(financeContext.topGoal.targetAmount)}.`
-        : 'Tạo mục tiêu mới để nhận nhắc nhở và gợi ý cá nhân hóa.',
+        ? `Hạn chót: ${new Date(financeContext.topGoal.endDate).toLocaleDateString('vi-VN')}.`
+        : 'Tạo mục tiêu để nhận nhắc nhở cá nhân hóa.',
     };
   }
 
   return {
-    reply: `${botName} đang sẵn sàng hỗ trợ. Bạn có thể hỏi mình về chi tiêu, mục tiêu tiết kiệm, ngân sách tháng này hoặc nhờ gợi ý cắt giảm chi phí.`,
+    reply: `Chào bạn, mình là ${botName}. Mình có thể giúp bạn:\n- Phân tích chi tiêu & báo cáo thu chi\n- Theo dõi tiến độ mục tiêu tiết kiệm\n- Gợi ý phân bổ ngân sách thông minh`,
     suggestions: [
       'Phân tích chi tiêu của tôi',
       'Làm sao để tiết kiệm?',
@@ -483,8 +491,8 @@ const buildChatFallback = ({ message, financeContext, botName }) => {
     ],
     intent: 'general',
     highlight: financeContext.monthExpense > 0
-      ? `Hiện tại bạn đã chi ${formatCurrency(financeContext.monthExpense)} trong tháng này.`
-      : 'Chưa có nhiều dữ liệu giao dịch trong tháng này.',
+      ? `Bạn đã chi ${formatCurrency(financeContext.monthExpense)} trong tháng này.`
+      : 'Hãy thêm giao dịch đầu tiên để bắt đầu!',
   };
 };
 
@@ -528,7 +536,7 @@ const buildFinanceContext = async (user) => {
     .filter((item) => item.type === 'expense')
     .reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-  const expectedIncome = Number(onboarding?.income_monthly || monthIncome || 0);
+  const expectedIncome = monthIncome > 0 ? monthIncome : Number(onboarding?.income_monthly || 0);
   const flexibleBudgetPct = Number(onboarding?.needs_pct || 50) + Number(onboarding?.wants_pct || 30);
   const monthlyBudget = expectedIncome > 0 ? (expectedIncome * flexibleBudgetPct) / 100 : 0;
   const remainingBudget = Math.max(0, monthlyBudget - monthExpense);
@@ -631,15 +639,18 @@ const generateChatReply = async ({ message, history, financeContext, user }) => 
   }
 
   const prompt = [
-    `Bạn là ${botName}, trợ lý tài chính AI của người dùng ${user.full_name || user.email}.`,
-    'Trả lời bằng tiếng Việt, thân thiện, hiện đại. Dùng toàn bộ dữ liệu giao dịch trong context để tính toán chính xác số dư, tổng thu chi khi người dùng yêu cầu phân tích.',
-    'Nếu người dùng hỏi phân tích nhưng chưa rõ thời gian, hãy hỏi lại họ muốn xem tháng nào.',
-    'ĐẶC BIỆT LƯU Ý: Nếu người dùng báo cáo một giao dịch mới (VD: "Hôm nay tôi mua bún bò 30k"), hãy đặt intent="transaction" và điền vào extractedTransaction. Mục category phải thuộc danh sách: ăn uống, di chuyển, mua sắm, giải trí, hóa đơn, sức khỏe, giáo dục, lương, thưởng, đầu tư, khác.',
+    `Bạn là ${botName}, trợ lý tài chính AI phong cách Gen Z, am hiểu số liệu cho người dùng ${user.full_name || user.email}.`,
+    'YÊU CẦU TRẢ LỜI:',
+    '1. CẤU TRÚC: Kết hợp giữa phân tích bằng văn bản ngắn gọn và các thông số cụ thể bằng gạch đầu dòng. Đừng quá cực đoan trong việc rút gọn, hãy đảm bảo trả lời đầy đủ câu hỏi của người dùng.',
+    '2. LOẠI BỎ SÁO RỖNG: Tránh các câu chào hỏi rườm rà hoặc các câu lặp lại vô nghĩa. Tập trung vào insight (ví dụ: "Bạn đang chi quá nhiều vào ăn uống, hãy thử giảm 10%").',
+    '3. DỮ LIỆU TÀI CHÍNH: Luôn sử dụng dữ liệu trong context. Chú ý: Thu nhập để tính toán ngân sách sẽ ưu tiên Thu nhập thực tế trong tháng (monthIncome), nếu monthIncome=0 mới dùng Thu nhập dự kiến (expectedIncome).',
+    '4. GỢI Ý ĐẦU TƯ/CHI TIÊU: Nếu người dùng hỏi về đầu tư, hãy gợi ý các kênh cụ thể dựa trên số dư còn lại (VD: gửi tiết kiệm, chứng khoán, hoặc đóng góp vào mục tiêu cụ thể của họ).',
+    'Nếu người dùng báo cáo giao dịch mới, đặt intent="transaction" và trích xuất thông tin.',
     `Context tài chính: ${JSON.stringify(financeContext)}`,
     `Lịch sử chat gần đây: ${JSON.stringify(history || [])}`,
-    `Tin nhắn mới nhất của người dùng: ${message}`,
+    `Tin nhắn của người dùng: ${message}`,
     '',
-    'Hãy trả về JSON theo schema đã yêu cầu.',
+    'Trả về JSON theo schema yêu cầu.',
   ].join('\n');
 
   try {
