@@ -32,7 +32,7 @@ export const API_BASE_URL = (() => {
   if (envUrl) {
     return envUrl;
   }
-  return getDevHost() || 'http://127.0.0.1:4000';
+  return getDevHost() || 'https://smart-finance-assistant.onrender.com';
 })();
 
 // Patch global fetch to bypass ngrok warning
