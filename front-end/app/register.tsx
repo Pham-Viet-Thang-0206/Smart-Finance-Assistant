@@ -200,13 +200,13 @@ export default function RegisterScreen() {
         <View style={styles.bgOrbSmall} />
       </View>
 
-      {isIOS ? (
-        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={12}>
-          {content}
-        </KeyboardAvoidingView>
-      ) : (
-        <View style={styles.flex}>{content}</View>
-      )}
+      <KeyboardAvoidingView 
+        style={styles.flex} 
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
+      >
+        {content}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
