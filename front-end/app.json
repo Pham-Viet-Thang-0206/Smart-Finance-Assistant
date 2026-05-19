@@ -15,6 +15,7 @@
       }
     },
     "android": {
+      "package": "com.phamvietthang.moneebot",
       "permissions": [
         "RECORD_AUDIO"
       ],
