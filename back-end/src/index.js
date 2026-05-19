@@ -39,7 +39,7 @@ const initDb = async () => {
         email VARCHAR(255) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
         avatar_url TEXT,
-        points INT DEFAULT 1250,
+        points INT DEFAULT 0,
         streak_count INT DEFAULT 0,
         last_post_date DATE DEFAULT NULL,
         created_at DATETIME NOT NULL
@@ -185,6 +185,18 @@ const initDb = async () => {
       )
     `);
 
+    // Ensure the default value for points is 0 and existing 1250 values are reset to 0
+    try {
+      await pool.execute('ALTER TABLE users MODIFY COLUMN points INT DEFAULT 0');
+    } catch (e) {
+      console.warn('Failed to alter users points column:', e.message);
+    }
+    try {
+      await pool.execute('UPDATE users SET points = 0 WHERE points = 1250');
+    } catch (e) {
+      console.warn('Failed to update existing users points:', e.message);
+    }
+
     console.log('Database initialized successfully.');
   } catch (err) {
     console.error('Database initialization failed:', err);
@@ -202,6 +214,42 @@ const isValidPassword = (password) =>
   typeof password === 'string' && password.length >= 8 && password.length <= 72;
 
 const isValidPhone = (phone) => /^\+?\d{9,15}$/.test(phone);
+
+const getUserPointsWithBonus = async (userId, basePoints) => {
+  try {
+    // 1. Get onboarding data to compute budget
+    const [onboardingRows] = await pool.execute(
+      'SELECT income_monthly, needs_pct, wants_pct FROM user_onboarding WHERE user_id = ?',
+      [userId]
+    );
+    if (!onboardingRows.length) return basePoints;
+    const { income_monthly, needs_pct, wants_pct } = onboardingRows[0];
+    const monthlyBudget = (income_monthly * (needs_pct + wants_pct)) / 100;
+    if (monthlyBudget <= 0) return basePoints;
+
+    // 2. Get total expenses grouped by month/year
+    const [expenseRows] = await pool.execute(
+      `SELECT YEAR(occurred_at) as yr, MONTH(occurred_at) as mo, SUM(amount) as total_spent 
+       FROM user_transactions 
+       WHERE user_id = ? AND type = 'expense' 
+       GROUP BY YEAR(occurred_at), MONTH(occurred_at)`,
+      [userId]
+    );
+
+    // 3. Count how many months the user spent <= budget
+    let bonusMonths = 0;
+    for (const row of expenseRows) {
+      if (Number(row.total_spent) <= monthlyBudget) {
+        bonusMonths += 1;
+      }
+    }
+
+    return basePoints + (bonusMonths * 100);
+  } catch (error) {
+    console.error('Error calculating budget bonus points:', error);
+    return basePoints;
+  }
+};
 
 const EXPENSE_CATEGORIES = [
   'ăn uống',
@@ -1071,7 +1119,7 @@ app.get('/api/onboarding', async (req, res) => {
       return res.status(400).json({ message: 'Email là bắt buộc.' });
     }
     const normalizedEmail = normalizeEmail(String(email));
-    const [users] = await pool.execute('SELECT id, email, full_name, phone FROM users WHERE email = ?', [
+    const [users] = await pool.execute('SELECT id, email, full_name, phone, points, streak_count FROM users WHERE email = ?', [
       normalizedEmail,
     ]);
     const user = users?.[0];
@@ -1094,6 +1142,8 @@ app.get('/api/onboarding', async (req, res) => {
       [user.id]
     );
 
+    const pointsWithBonus = await getUserPointsWithBonus(user.id, user.points);
+
     return res.json({
       exists: true,
       userId: user.id,
@@ -1102,6 +1152,8 @@ app.get('/api/onboarding', async (req, res) => {
         email: user.email,
         fullName: user.full_name,
         phone: user.phone,
+        points: pointsWithBonus,
+        streak_count: user.streak_count,
       },
       onboarding: {
         incomeMonthly: onboarding.income_monthly,
@@ -1604,10 +1656,22 @@ app.get('/api/community/ranking', async (req, res) => {
     const [ranking] = await pool.execute(`
       SELECT id, full_name, avatar_url, points, streak_count 
       FROM users 
-      ORDER BY streak_count DESC, points DESC 
-      LIMIT 6
     `);
-    return res.json({ items: ranking });
+
+    const items = [];
+    for (const row of ranking) {
+      const totalPoints = await getUserPointsWithBonus(row.id, row.points);
+      items.push({
+        ...row,
+        points: totalPoints
+      });
+    }
+
+    // Sort by streak_count DESC, then points DESC
+    items.sort((a, b) => b.streak_count - a.streak_count || b.points - a.points);
+    const top6 = items.slice(0, 6);
+
+    return res.json({ items: top6 });
   } catch (error) {
     return res.status(500).json({ message: 'Lỗi máy chủ.' });
   }

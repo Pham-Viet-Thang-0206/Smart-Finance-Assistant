@@ -2047,7 +2047,7 @@ export default function HomeScreen() {
           <View style={styles.headerScore}>
             <Ionicons name="star" size={14} color="#FBBF24" />
             <Text style={styles.headerScoreText}>
-              {currentUser?.points || 1250} điểm
+              {currentUser?.points ?? 0} điểm
             </Text>
           </View>
           <TouchableOpacity
@@ -2071,30 +2071,43 @@ export default function HomeScreen() {
       >
         {activeTab === 'home' && (
           <>
-            <View style={styles.scoreCard}>
-              <View style={styles.scoreHeader}>
-                <View>
-                  <Text style={styles.scoreLabel}>FinScore của bạn</Text>
-                  <View style={styles.scoreRow}>
-                    <Text style={styles.scoreValue}>78</Text>
-                    <Text style={styles.scoreMax}>/100</Text>
+            {(() => {
+              const currentPoints = currentUser?.points ?? 0;
+              const currentLevel = Math.floor(currentPoints / 1000) + 1;
+              const pointsInCurrentLevel = currentPoints % 1000;
+              const levelProgressPercent = (pointsInCurrentLevel / 1000) * 100;
+              const pointsNeeded = 1000 - pointsInCurrentLevel;
+
+              return (
+                <View style={styles.scoreCard}>
+                  <View style={styles.scoreHeader}>
+                    <View>
+                      <Text style={styles.scoreLabel}>Điểm ngôi sao Monee</Text>
+                      <View style={[styles.scoreRow, { alignItems: 'center' }]}>
+                        <Ionicons name="star" size={28} color="#FBBF24" />
+                        <Text style={styles.scoreValue}>{currentPoints}</Text>
+                        <Text style={styles.scoreMax}> điểm</Text>
+                      </View>
+                      <Text style={styles.scoreStatus}>Cấp độ {currentLevel}</Text>
+                    </View>
+                    <View style={styles.scoreIcon}>
+                      <Ionicons name="trophy" size={26} color="#F8FAFC" />
+                    </View>
                   </View>
-                  <Text style={styles.scoreStatus}>Tốt</Text>
-                </View>
-                <View style={styles.scoreIcon}>
-                  <Ionicons name="pulse" size={26} color="#F8FAFC" />
-                </View>
-              </View>
 
-              <View style={styles.progressTrack}>
-                <View style={[styles.progressFill, { width: '78%' }]} />
-              </View>
+                  <View style={styles.progressTrack}>
+                    <View style={[styles.progressFill, { width: `${levelProgressPercent}%` }]} />
+                  </View>
 
-              <View style={styles.tipRow}>
-                <MaterialCommunityIcons name="lightbulb-on-outline" size={16} color="#FBBF24" />
-                <Text style={styles.tipText}>Tiếp tục tiết kiệm để tăng điểm!</Text>
-              </View>
-            </View>
+                  <View style={styles.tipRow}>
+                    <MaterialCommunityIcons name="lightbulb-on-outline" size={16} color="#FBBF24" />
+                    <Text style={styles.tipText}>
+                      Còn {pointsNeeded} điểm nữa để lên Cấp độ {currentLevel + 1}!
+                    </Text>
+                  </View>
+                </View>
+              );
+            })()}
 
             <View style={styles.chartCard}>
               <View style={styles.chartHeader}>
@@ -2633,27 +2646,27 @@ export default function HomeScreen() {
               <View style={styles.levelCardTop}>
                 <View style={styles.levelBadge}>
                   <Ionicons name="trophy-outline" size={14} color="#FBBF24" />
-                  <Text style={styles.levelBadgeText}>Cấp độ {Math.floor((currentUser?.points || 1250) / 1000) + 1}</Text>
+                  <Text style={styles.levelBadgeText}>Cấp độ {Math.floor((currentUser?.points ?? 0) / 1000) + 1}</Text>
                 </View>
                 
                 <View style={styles.levelPointsGroup}>
-                  <Text style={styles.levelPointsValue}>{currentUser?.points || 1250}</Text>
+                  <Text style={styles.levelPointsValue}>{currentUser?.points ?? 0}</Text>
                   <Text style={styles.levelPointsLabel}>pts</Text>
                 </View>
               </View>
 
               <View style={styles.levelProgressSection}>
                 <View style={styles.levelLabelsLine}>
-                  <Text style={styles.levelLabel}>Level {Math.floor((currentUser?.points || 1250) / 1000) + 1}</Text>
-                  <Text style={styles.levelLabel}>Level {Math.floor((currentUser?.points || 1250) / 1000) + 2}</Text>
+                  <Text style={styles.levelLabel}>Level {Math.floor((currentUser?.points ?? 0) / 1000) + 1}</Text>
+                  <Text style={styles.levelLabel}>Level {Math.floor((currentUser?.points ?? 0) / 1000) + 2}</Text>
                 </View>
                 <View style={styles.levelTrack}>
-                  <View style={[styles.levelFill, { width: `${((currentUser?.points || 1250) % 1000) / 10}%` }]} />
+                  <View style={[styles.levelFill, { width: `${((currentUser?.points ?? 0) % 1000) / 10}%` }]} />
                 </View>
                 <View style={styles.levelRemainingLine}>
                   <MaterialCommunityIcons name="star-four-points" size={16} color="#FDE68A" />
                   <Text style={styles.levelRemainingText}>
-                    Còn {1000 - ((currentUser?.points || 1250) % 1000)} điểm để lên cấp!
+                    Còn {1000 - ((currentUser?.points ?? 0) % 1000)} điểm để lên cấp!
                   </Text>
                 </View>
               </View>
