@@ -3012,7 +3012,7 @@ export default function HomeScreen() {
         <Modal visible transparent animationType="slide" onRequestClose={() => setIsChatScreenOpen(false)}>
           <KeyboardAvoidingView
             style={styles.chatModalWrapper}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
           >
             <View style={styles.chatScreenPanel}>
@@ -3366,7 +3366,7 @@ export default function HomeScreen() {
             }}
           />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.manualModalWrapper}>
             <View style={styles.manualModal}>
@@ -3558,7 +3558,7 @@ export default function HomeScreen() {
             }}
           />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.scanModalWrapper}>
             <View style={styles.scanModal}>
@@ -3722,7 +3722,7 @@ export default function HomeScreen() {
             }}
           />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.uploadModalWrapper}>
             <View style={styles.uploadModal}>
@@ -4196,7 +4196,7 @@ export default function HomeScreen() {
         <View style={[styles.overlay, { zIndex: 3000 }]} pointerEvents="box-none">
           <Pressable style={styles.modalBackdrop} onPress={() => setIsEditPostModalOpen(false)} />
           <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
             style={styles.editPostModalWrapper}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
           >
@@ -4279,7 +4279,7 @@ export default function HomeScreen() {
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable style={styles.modalBackdrop} onPress={() => setIsAddGoalModalOpen(false)} />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 16 : 0}
             style={styles.manualModalWrapper}>
             <View style={styles.manualModal}>
@@ -4413,7 +4413,7 @@ export default function HomeScreen() {
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable style={styles.modalBackdrop} onPress={() => setIsCommentModalOpen(false)} />
           <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={styles.commentModalWrapper}
             keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
           >
@@ -4589,7 +4589,7 @@ export default function HomeScreen() {
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable style={styles.modalBackdrop} onPress={() => setIsDepositModalOpen(false)} />
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={styles.manualModalWrapper}>
             <View style={styles.manualModal}>
               <View style={styles.manualHeader}>

@@ -332,10 +332,9 @@ export default function OnboardingSummaryScreen() {
         )}
       </ScrollView>
 
-      {/* Edit Modal */}
       <Modal visible={isEditModalOpen} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'center' }}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, justifyContent: 'center' }}>
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Chỉnh sửa</Text>

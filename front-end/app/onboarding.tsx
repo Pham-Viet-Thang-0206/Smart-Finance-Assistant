@@ -409,16 +409,12 @@ export default function OnboardingScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      {isIOS ? (
-        <KeyboardAvoidingView
-          style={styles.container}
-          behavior="padding"
-          keyboardVerticalOffset={12}>
-          {content}
-        </KeyboardAvoidingView>
-      ) : (
-        <View style={styles.container}>{content}</View>
-      )}
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}>
+        {content}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
