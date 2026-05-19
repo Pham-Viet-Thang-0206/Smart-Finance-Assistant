@@ -241,6 +241,23 @@ export default function HomeScreen() {
   const [isReportPreviewOpen, setIsReportPreviewOpen] = useState(false);
   const [reportSelectedMonth, setReportSelectedMonth] = useState<{ year: number, month: number } | null>(null);
   const [reportData, setReportData] = useState<any>(null);
+  const [reportHistory, setReportHistory] = useState<any[]>([]);
+  const [isGoalSuccessModalOpen, setIsGoalSuccessModalOpen] = useState(false);
+  const [lastCompletedGoal, setLastCompletedGoal] = useState<any>(null);
+  const [isCompletedGoalsModalOpen, setIsCompletedGoalsModalOpen] = useState(false);
+
+  const loadReportHistory = useCallback(async () => {
+    if (!userEmail) return;
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/reports/history?email=${encodeURIComponent(userEmail)}`);
+      const data = await response.json();
+      if (response.ok) {
+        setReportHistory(Array.isArray(data) ? data : []);
+      }
+    } catch (error) {
+      console.error('Error loading report history:', error);
+    }
+  }, [userEmail, apiBaseUrl]);
 
   const availableReportMonths = useMemo(() => {
     const monthsSet = new Set<string>();
@@ -499,26 +516,41 @@ export default function HomeScreen() {
   const handleContributeToGoal = async () => {
     if (!depositAmount || !selectedGoalForDeposit) return;
     try {
+      const amountToSave = Number(depositAmount);
       const resp = await fetch(`${API_BASE_URL}/api/savings-goals/${selectedGoalForDeposit.id}/contribute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: userEmail,
-          amount: Number(depositAmount),
+          amount: amountToSave,
         }),
       });
       if (resp.ok) {
         setIsDepositModalOpen(false);
         setDepositAmount('');
+        
+        // Check if goal is completed
+        const newCurrentAmount = Number(selectedGoalForDeposit.current_amount) + amountToSave;
+        const isCompleted = newCurrentAmount >= Number(selectedGoalForDeposit.target_amount);
+        
+        if (isCompleted) {
+          setLastCompletedGoal({
+            ...selectedGoalForDeposit,
+            current_amount: newCurrentAmount
+          });
+          setIsGoalSuccessModalOpen(true);
+        } else {
+          setCustomConfirm({
+            visible: true,
+            title: 'Thành công',
+            message: `Đã tiết kiệm ${formatAmountInput(depositAmount)}đ cho mục tiêu ${selectedGoalForDeposit.name}.`,
+            type: 'success',
+            onConfirm: () => {},
+          });
+        }
+        
         loadSavingsGoals();
         loadTransactions();
-        setCustomConfirm({
-          visible: true,
-          title: 'Thành công',
-          message: `Đã tiết kiệm ${formatAmountInput(depositAmount)}đ cho mục tiêu ${selectedGoalForDeposit.name}.`,
-          type: 'success',
-          onConfirm: () => {},
-        });
       } else {
         const data = await resp.json();
         Alert.alert('Lỗi', data.message || 'Không thể thực hiện tiết kiệm.');
@@ -773,7 +805,8 @@ export default function HomeScreen() {
     useCallback(() => {
       fetchOnboarding();
       loadTransactions();
-    }, [fetchOnboarding])
+      loadReportHistory();
+    }, [fetchOnboarding, loadTransactions, loadReportHistory])
   );
 
   const months = useMemo(() => Array.from({ length: 12 }, (_, i) => i + 1), []);
@@ -1518,6 +1551,35 @@ export default function HomeScreen() {
       topGoalName ? `Lập kế hoạch cho mục tiêu ${topGoalName}` : 'Gợi ý mục tiêu tiết kiệm cho tôi',
     ];
     return items.filter(Boolean).slice(0, 4);
+  }, [savingsGoals]);
+
+  const { activeGoals, completedGoalsByMonth } = useMemo(() => {
+    const active = savingsGoals.filter(g => g.current_amount < g.target_amount);
+    const completed = savingsGoals.filter(g => g.current_amount >= g.target_amount);
+    
+    // Group completed goals by month
+    const grouped: Record<string, any[]> = {};
+    completed.forEach(g => {
+      const d = new Date(g.end_date);
+      const monthKey = `Tháng ${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+      if (!grouped[monthKey]) grouped[monthKey] = [];
+      grouped[monthKey].push(g);
+    });
+    
+    // Sort month keys descending
+    const sortedKeys = Object.keys(grouped).sort((a, b) => {
+      const [mA, yA] = a.replace('Tháng ', '').split('/').map(Number);
+      const [mB, yB] = b.replace('Tháng ', '').split('/').map(Number);
+      if (yA !== yB) return yB - yA;
+      return mB - mA;
+    });
+    
+    const sortedGrouped = sortedKeys.map(key => ({
+      month: key,
+      goals: grouped[key]
+    }));
+    
+    return { activeGoals: active, completedGoalsByMonth: sortedGrouped };
   }, [savingsGoals]);
 
   const recentTransactionsPreview = useMemo(() => txItems.slice(0, 4), [txItems]);
@@ -2265,12 +2327,12 @@ export default function HomeScreen() {
 
               {isGoalsLoading ? (
                 <ActivityIndicator color="#08B0C9" style={{ marginTop: 10 }} />
-              ) : savingsGoals.length === 0 ? (
+              ) : activeGoals.length === 0 ? (
                 <View style={styles.emptyGoalsCard}>
                   <Text style={styles.emptyGoalsText}>Chưa có mục tiêu tiết kiệm nào. Hãy bắt đầu ngay!</Text>
                 </View>
               ) : (
-                savingsGoals.map((goal) => {
+                activeGoals.map((goal) => {
                   const progress = goal.target_amount > 0 ? (goal.current_amount / goal.target_amount) : 0;
                   const pct = Math.min(Math.round(progress * 100), 100);
                   
@@ -2316,6 +2378,18 @@ export default function HomeScreen() {
                   );
                 })
               )}
+
+              {/* Completed Goals Button */}
+              <TouchableOpacity 
+                style={styles.completedGoalsBtn}
+                onPress={() => setIsCompletedGoalsModalOpen(true)}
+              >
+                <View style={styles.completedGoalsBtnContent}>
+                  <MaterialCommunityIcons name="check-decagram" size={20} color="#10B981" />
+                  <Text style={styles.completedGoalsBtnText}>Mục tiêu đã hoàn thành</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+              </TouchableOpacity>
             </View>
 
             <TouchableOpacity
@@ -2551,10 +2625,8 @@ export default function HomeScreen() {
         )}
 
                 {activeTab === 'treasure' && (
-          <ScrollView 
-            style={{ flex: 1, backgroundColor: '#FBFCFE' }} 
-            contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
-            showsVerticalScrollIndicator={false}
+          <View 
+            style={{ flex: 1, backgroundColor: '#FBFCFE', padding: 20, paddingBottom: 120 }}
           >
             {/* Level Card */}
             <View style={styles.treasureLevelCard}>
@@ -2669,7 +2741,35 @@ export default function HomeScreen() {
                 <Ionicons name="sparkles" size={20} color="#FFFFFF" style={{ marginLeft: 'auto' }} />
               </LinearGradient>
             </TouchableOpacity>
-          </ScrollView>
+
+            {/* Lịch sử xuất báo cáo */}
+            {reportHistory.length > 0 && (
+              <View style={{ marginTop: 30 }}>
+                <Text style={{ fontSize: 16, color: '#0F172A', fontFamily: Platform.select({ ios: 'AvenirNext-DemiBold', android: 'sans-serif-medium', default: 'Avenir Next' }), marginBottom: 15 }}>Lịch sử xuất báo cáo</Text>
+                <View style={[styles.txCard, { maxHeight: 380, paddingBottom: 0 }]}>
+                  <ScrollView 
+                    nestedScrollEnabled={true} 
+                    showsVerticalScrollIndicator={true}
+                    contentContainerStyle={{ paddingBottom: 10 }}
+                  >
+                    {reportHistory.map((item: any, index: number) => (
+                      <View key={index} style={[styles.txItem, index === reportHistory.length - 1 && styles.txItemLast]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                          <View style={{ backgroundColor: '#E0F2FE', padding: 8, borderRadius: 8 }}>
+                            <Ionicons name="document-text" size={18} color="#0284C7" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.txLabel}>Báo cáo Tháng {String(item.month).padStart(2, '0')}/{item.year}</Text>
+                            <Text style={styles.txMeta}>Đã xuất lúc {new Date(item.exported_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} - {new Date(item.exported_at).toLocaleDateString('vi-VN')}</Text>
+                          </View>
+                        </View>
+                      </View>
+                    ))}
+                  </ScrollView>
+                </View>
+              </View>
+            )}
+          </View>
         )}
       </ScrollView>
       {activeTab === 'community' && (
@@ -4625,7 +4725,7 @@ export default function HomeScreen() {
       {/* Chọn tháng báo cáo Modal */}
       {isReportMonthSelectOpen && (
         <Modal visible transparent animationType="fade" onRequestClose={() => setIsReportMonthSelectOpen(false)}>
-          <View style={styles.overlay} pointerEvents="box-none">
+          <View style={[styles.overlay, { justifyContent: 'center' }]} pointerEvents="box-none">
             <Pressable style={styles.modalBackdrop} onPress={() => setIsReportMonthSelectOpen(false)} />
             <View style={styles.reportMonthModal}>
               <View style={styles.reportModalHeader}>
@@ -4659,11 +4759,99 @@ export default function HomeScreen() {
       )}
 
       {/* Xem trước Báo cáo Modal */}
+      {/* Goal Success Popup */}
+      <Modal visible={isGoalSuccessModalOpen} transparent animationType="fade">
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsGoalSuccessModalOpen(false)} />
+          <View style={styles.successModalContainer}>
+             <LinearGradient
+               colors={['#10B981', '#059669']}
+               style={styles.successIconCircle}
+             >
+               <Ionicons name="checkmark-done-circle" size={50} color="#FFFFFF" />
+             </LinearGradient>
+             <Text style={styles.successTitle}>Chúc mừng!</Text>
+             <Text style={styles.successMessage}>
+                Bạn đã hoàn thành xuất sắc mục tiêu:{"\n"}
+                <Text style={{ fontWeight: 'bold', color: '#0F172A' }}>{lastCompletedGoal?.icon} {lastCompletedGoal?.name}</Text>
+             </Text>
+             <View style={styles.successStatsRow}>
+                <View style={styles.successStat}>
+                   <Text style={styles.successStatLabel}>Đã tiết kiệm</Text>
+                   <Text style={styles.successStatValue}>{formatAmount(lastCompletedGoal?.current_amount || 0)}</Text>
+                </View>
+             </View>
+             <TouchableOpacity 
+               style={styles.successCloseBtn}
+               onPress={() => setIsGoalSuccessModalOpen(false)}
+             >
+               <Text style={styles.successCloseBtnText}>Tuyệt vời!</Text>
+             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Completed Goals Modal */}
+      <Modal visible={isCompletedGoalsModalOpen} transparent animationType="slide" onRequestClose={() => setIsCompletedGoalsModalOpen(false)}>
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable style={styles.modalBackdrop} onPress={() => setIsCompletedGoalsModalOpen(false)} />
+          <View style={styles.completedGoalsModal}>
+            <View style={styles.manualHeader}>
+              <View style={styles.manualTitleRow}>
+                <MaterialCommunityIcons name="check-decagram" size={24} color="#10B981" />
+                <Text style={styles.manualTitle}>Mục tiêu đã hoàn thành</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsCompletedGoalsModalOpen(false)}>
+                <Ionicons name="close" size={24} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.completedGoalsScroll} showsVerticalScrollIndicator={false}>
+              {completedGoalsByMonth.length === 0 ? (
+                <View style={styles.emptyCompletedContainer}>
+                  <MaterialCommunityIcons name="clipboard-text-outline" size={60} color="#CBD5E1" />
+                  <Text style={styles.emptyCompletedText}>Bạn chưa có mục tiêu nào hoàn thành.</Text>
+                  <Text style={styles.emptyCompletedSubText}>Hãy nỗ lực hơn để đạt được những cột mốc mới nhé!</Text>
+                </View>
+              ) : (
+                completedGoalsByMonth.map((group, gIdx) => (
+                  <View key={`group-${gIdx}`} style={styles.monthGroup}>
+                    <View style={styles.monthGroupHeader}>
+                      <Text style={styles.monthGroupTitle}>{group.month}</Text>
+                      <View style={styles.monthGroupLine} />
+                    </View>
+                    {group.goals.map((goal) => (
+                      <View key={goal.id} style={styles.completedGoalItem}>
+                        <View style={styles.completedGoalIconBox}>
+                          <Text style={{ fontSize: 24 }}>{goal.icon}</Text>
+                        </View>
+                        <View style={styles.completedGoalInfo}>
+                          <Text style={styles.completedGoalName}>{goal.name}</Text>
+                          <Text style={styles.completedGoalAmount}>{formatAmount(goal.target_amount)}</Text>
+                        </View>
+                        <View style={styles.completedBadge}>
+                          <Ionicons name="checkmark" size={14} color="#10B981" />
+                          <Text style={styles.completedBadgeText}>Đạt</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       <FinancialReportModal
         visible={isReportPreviewOpen}
-        onClose={() => setIsReportPreviewOpen(false)}
+        onClose={() => {
+          setIsReportPreviewOpen(false);
+          loadReportHistory();
+        }}
         reportData={reportData}
         userName={currentUser?.fullName || currentUser?.full_name || 'Khách'}
+        userEmail={userEmail}
       />
     </SafeAreaView>
   );
@@ -8559,5 +8747,196 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#0F766E',
     lineHeight: 20,
-  }
+  },
+  completedGoalsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F0FDF4',
+    padding: 16,
+    borderRadius: 18,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+  },
+  completedGoalsBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  completedGoalsBtnText: {
+    fontSize: 15,
+    color: '#10B981',
+    fontFamily: Platform.select({ ios: 'AvenirNext-Medium', android: 'sans-serif-medium', default: 'Avenir Next' }),
+  },
+  successModalContainer: {
+    width: '85%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 30,
+    padding: 24,
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginTop: 'auto',
+    marginBottom: 'auto',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  successIconCircle: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  successTitle: {
+    fontSize: 24,
+    color: '#0F172A',
+    fontWeight: 'bold',
+    marginBottom: 12,
+  },
+  successMessage: {
+    fontSize: 16,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 24,
+  },
+  successStatsRow: {
+    flexDirection: 'row',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 20,
+    padding: 16,
+    width: '100%',
+    marginBottom: 24,
+    justifyContent: 'center',
+  },
+  successStat: {
+    alignItems: 'center',
+  },
+  successStatLabel: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginBottom: 4,
+  },
+  successStatValue: {
+    fontSize: 18,
+    color: '#10B981',
+    fontWeight: 'bold',
+  },
+  successCloseBtn: {
+    backgroundColor: '#10B981',
+    paddingVertical: 14,
+    paddingHorizontal: 40,
+    borderRadius: 16,
+    width: '100%',
+    alignItems: 'center',
+  },
+  successCloseBtnText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  completedGoalsModal: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: '85%',
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    padding: 24,
+  },
+  completedGoalsScroll: {
+    marginTop: 16,
+  },
+  emptyCompletedContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    gap: 12,
+  },
+  emptyCompletedText: {
+    fontSize: 16,
+    color: '#475569',
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  emptyCompletedSubText: {
+    fontSize: 14,
+    color: '#94A3B8',
+    textAlign: 'center',
+    paddingHorizontal: 40,
+  },
+  monthGroup: {
+    marginBottom: 24,
+  },
+  monthGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 12,
+  },
+  monthGroupTitle: {
+    fontSize: 14,
+    color: '#94A3B8',
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  monthGroupLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#F1F5F9',
+  },
+  completedGoalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+  },
+  completedGoalIconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+  },
+  completedGoalInfo: {
+    flex: 1,
+  },
+  completedGoalName: {
+    fontSize: 16,
+    color: '#0F172A',
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  completedGoalAmount: {
+    fontSize: 14,
+    color: '#64748B',
+  },
+  completedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  completedBadgeText: {
+    fontSize: 12,
+    color: '#10B981',
+    fontWeight: 'bold',
+  },
 });

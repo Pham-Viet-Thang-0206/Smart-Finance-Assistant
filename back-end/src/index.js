@@ -174,6 +174,17 @@ const initDb = async () => {
       // Column already exists
     }
 
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS report_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        month INT NOT NULL,
+        year INT NOT NULL,
+        exported_at DATETIME NOT NULL,
+        CONSTRAINT fk_report_history_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
     console.log('Database initialized successfully.');
   } catch (err) {
     console.error('Database initialization failed:', err);
@@ -396,6 +407,13 @@ const getMonthBounds = () => {
   return { now, start, end };
 };
 
+const getPreviousMonthBounds = () => {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const end = new Date(now.getFullYear(), now.getMonth(), 1);
+  return { start, end };
+};
+
 const buildExpenseBreakdown = (transactions) => {
   const totals = new Map();
   transactions
@@ -522,11 +540,19 @@ const buildFinanceContext = async (user) => {
     [user.id]
   );
 
-  const { now, start, end } = getMonthBounds();
+  const { now, start: currentStart, end: currentEnd } = getMonthBounds();
+  const { start: prevStart, end: prevEnd } = getPreviousMonthBounds();
+
   const currentMonthTransactions = transactionRows.filter((item) => {
     const occurredAt = item?.occurred_at ? new Date(item.occurred_at) : null;
     if (!occurredAt || Number.isNaN(occurredAt.getTime())) return false;
-    return occurredAt >= start && occurredAt < end;
+    return occurredAt >= currentStart && occurredAt < currentEnd;
+  });
+
+  const prevMonthTransactions = transactionRows.filter((item) => {
+    const occurredAt = item?.occurred_at ? new Date(item.occurred_at) : null;
+    if (!occurredAt || Number.isNaN(occurredAt.getTime())) return false;
+    return occurredAt >= prevStart && occurredAt < prevEnd;
   });
 
   const monthIncome = currentMonthTransactions
@@ -536,11 +562,19 @@ const buildFinanceContext = async (user) => {
     .filter((item) => item.type === 'expense')
     .reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
+  const prevMonthIncome = prevMonthTransactions
+    .filter((item) => item.type === 'income')
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const prevMonthExpense = prevMonthTransactions
+    .filter((item) => item.type === 'expense')
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
   const expectedIncome = monthIncome > 0 ? monthIncome : Number(onboarding?.income_monthly || 0);
   const flexibleBudgetPct = Number(onboarding?.needs_pct || 50) + Number(onboarding?.wants_pct || 30);
   const monthlyBudget = expectedIncome > 0 ? (expectedIncome * flexibleBudgetPct) / 100 : 0;
   const remainingBudget = Math.max(0, monthlyBudget - monthExpense);
   const topExpenseCategories = buildExpenseBreakdown(currentMonthTransactions);
+  const prevTopExpenseCategories = buildExpenseBreakdown(prevMonthTransactions);
 
   const normalizedGoals = goalRows.map((goal) => {
     const targetAmount = Number(goal.target_amount || 0);
@@ -558,7 +592,9 @@ const buildFinanceContext = async (user) => {
   });
 
   return {
-    monthLabel: `tháng ${now.getMonth() + 1}/${now.getFullYear()}`,
+    currentDate: now.toISOString(),
+    currentMonthLabel: `tháng ${now.getMonth() + 1}/${now.getFullYear()}`,
+    prevMonthLabel: `tháng ${now.getMonth() === 0 ? 12 : now.getMonth()}/${now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()}`,
     onboarding,
     allTransactions: transactionRows.map((item) => ({
       type: item.type,
@@ -567,7 +603,7 @@ const buildFinanceContext = async (user) => {
       desc: item.description || '',
       date: item.occurred_at,
     })),
-    recentTransactions: transactionRows.slice(0, 8).map((item) => ({
+    recentTransactions: transactionRows.slice(0, 15).map((item) => ({
       type: item.type,
       amount: Number(item.amount || 0),
       category: item.category || item.ai_category || 'khác',
@@ -575,6 +611,11 @@ const buildFinanceContext = async (user) => {
       occurredAt: item.occurred_at,
     })),
     topExpenseCategories,
+    prevMonthStats: {
+      income: prevMonthIncome,
+      expense: prevMonthExpense,
+      topCategories: prevTopExpenseCategories,
+    },
     goals: normalizedGoals,
     topGoal: normalizedGoals[0] || null,
     monthIncome,
@@ -639,18 +680,21 @@ const generateChatReply = async ({ message, history, financeContext, user }) => 
   }
 
   const prompt = [
-    `Bạn là ${botName}, trợ lý tài chính AI phong cách Gen Z, am hiểu số liệu cho người dùng ${user.full_name || user.email}.`,
-    'YÊU CẦU TRẢ LỜI:',
-    '1. CẤU TRÚC: Kết hợp giữa phân tích bằng văn bản ngắn gọn và các thông số cụ thể bằng gạch đầu dòng. Đừng quá cực đoan trong việc rút gọn, hãy đảm bảo trả lời đầy đủ câu hỏi của người dùng.',
-    '2. LOẠI BỎ SÁO RỖNG: Tránh các câu chào hỏi rườm rà hoặc các câu lặp lại vô nghĩa. Tập trung vào insight (ví dụ: "Bạn đang chi quá nhiều vào ăn uống, hãy thử giảm 10%").',
-    '3. DỮ LIỆU TÀI CHÍNH: Luôn sử dụng dữ liệu trong context. Chú ý: Thu nhập để tính toán ngân sách sẽ ưu tiên Thu nhập thực tế trong tháng (monthIncome), nếu monthIncome=0 mới dùng Thu nhập dự kiến (expectedIncome).',
-    '4. GỢI Ý ĐẦU TƯ/CHI TIÊU: Nếu người dùng hỏi về đầu tư, hãy gợi ý các kênh cụ thể dựa trên số dư còn lại (VD: gửi tiết kiệm, chứng khoán, hoặc đóng góp vào mục tiêu cụ thể của họ).',
-    'Nếu người dùng báo cáo giao dịch mới, đặt intent="transaction" và trích xuất thông tin.',
-    `Context tài chính: ${JSON.stringify(financeContext)}`,
-    `Lịch sử chat gần đây: ${JSON.stringify(history || [])}`,
-    `Tin nhắn của người dùng: ${message}`,
+    `Bạn là ${botName}, một trợ lý tài chính AI thông minh, sắc sảo và cực kỳ am hiểu về số liệu. Đối tượng phục vụ là ${user.full_name || 'người dùng'}.`,
+    `Ngày hiện tại (Today): ${new Date().toISOString()}.`,
     '',
-    'Trả về JSON theo schema yêu cầu.',
+    'NHIỆM VỤ CỦA BẠN:',
+    '1. PHÂN TÍCH CHUYÊN SÂU: Không chỉ liệt kê con số, hãy đưa ra Insight. Ví dụ: So sánh chi tiêu tháng này với tháng trước, cảnh báo nếu chi tiêu vượt mức bình thường, hoặc khen ngợi nếu người dùng tiết kiệm tốt.',
+    '2. TRẢ LỜI ĐÚNG NGỮ CẢNH THỜI GIAN: Nếu người dùng hỏi về "tháng trước", hãy sử dụng dữ liệu trong "prevMonthStats". Nếu hỏi về "tháng này" hoặc "hiện tại", dùng dữ liệu tháng hiện tại.',
+    '3. PHONG CÁCH: Trẻ trung (Gen Z), chuyên nghiệp, sử dụng biểu tượng cảm xúc (emoji) phù hợp. Tránh sáo rỗng, tập trung vào giá trị thực tế.',
+    '4. FORMATTING: Sử dụng gạch đầu dòng và bảng (nếu cần) để thông tin rõ ràng. Luôn kết thúc bằng một lời khuyên hành động (Actionable advice).',
+    '5. QUẢN LÝ GIAO DỊCH: Nếu người dùng báo cáo một giao dịch mới (VD: "Mới tiêu 50k ăn phở"), hãy đặt intent="transaction" và trích xuất dữ liệu.',
+    '',
+    `DỮ LIỆU TÀI CHÍNH (JSON): ${JSON.stringify(financeContext)}`,
+    `Lịch sử trò chuyện: ${JSON.stringify(history || [])}`,
+    `Yêu cầu của người dùng: "${message}"`,
+    '',
+    'LƯU Ý: Trả về kết quả dưới định dạng JSON theo đúng schema.',
   ].join('\n');
 
   try {
@@ -713,6 +757,44 @@ const generateChatReply = async ({ message, history, financeContext, user }) => 
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+app.get('/api/reports/history', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ message: 'Email is required' });
+    
+    const [users] = await pool.execute('SELECT id FROM users WHERE email = ?', [normalizeEmail(String(email))]);
+    if (!users.length) return res.status(404).json({ message: 'User not found' });
+    
+    const [history] = await pool.execute(
+      'SELECT id, month, year, exported_at FROM report_history WHERE user_id = ? ORDER BY exported_at DESC LIMIT 50',
+      [users[0].id]
+    );
+    res.json(history);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.post('/api/reports/history', async (req, res) => {
+  try {
+    const { email, month, year } = req.body;
+    if (!email || !month || !year) return res.status(400).json({ message: 'Missing fields' });
+    
+    const [users] = await pool.execute('SELECT id FROM users WHERE email = ?', [normalizeEmail(String(email))]);
+    if (!users.length) return res.status(404).json({ message: 'User not found' });
+    
+    await pool.execute(
+      'INSERT INTO report_history (user_id, month, year, exported_at) VALUES (?, ?, ?, NOW())',
+      [users[0].id, month, year]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error' });
+  }
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -1655,6 +1737,29 @@ app.post('/api/community/comments/:id/like', async (req, res) => {
     }
   } catch (error) {
     return res.status(500).json({ message: 'Lỗi máy chủ.' });
+  }
+});
+
+app.post('/api/user/update-info', async (req, res) => {
+  try {
+    const { email, fullName } = req.body;
+    if (!email || !fullName) {
+      return res.status(400).json({ message: 'Thiếu thông tin email hoặc họ tên.' });
+    }
+
+    const [result] = await pool.execute(
+      'UPDATE users SET full_name = ? WHERE email = ?',
+      [fullName, normalizeEmail(email)]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
+    }
+
+    res.json({ success: true, message: 'Cập nhật thông tin thành công.' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Lỗi máy chủ khi cập nhật thông tin.' });
   }
 });
 

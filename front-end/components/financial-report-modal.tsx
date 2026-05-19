@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Modal,
   SafeAreaView,
@@ -16,6 +16,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { LinearGradient } from 'expo-linear-gradient';
 import { LineChart, PieChart } from 'react-native-chart-kit';
+import { API_BASE_URL } from '@/constants/api';
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -30,6 +31,7 @@ interface TransactionData {
   category: string;
   amount: number | string;
   note?: string;
+  description?: string;
   type: 'income' | 'expense';
 }
 
@@ -50,10 +52,36 @@ interface FinancialReportModalProps {
   onClose: () => void;
   reportData: ReportData | null;
   userName: string;
+  userEmail: string;
 }
 
-export function FinancialReportModal({ visible, onClose, reportData, userName }: FinancialReportModalProps) {
+export function FinancialReportModal({ visible, onClose, reportData, userName, userEmail }: FinancialReportModalProps) {
+  const [displayMode, setDisplayMode] = useState<'top' | 'custom'>('top');
+  const [selectedCats, setSelectedCats] = useState<string[]>([]);
+  const [showPicker, setShowPicker] = useState(false);
+
   if (!reportData) return null;
+
+  // Available categories from actual data
+  const availableCategories = reportData.categories.map(c => c.name);
+
+  // Filtered transactions for Section 3
+  const filteredTxs = displayMode === 'top' 
+    ? reportData.topTxs 
+    : reportData.monthTxs.filter(t => 
+        t.type === 'expense' && 
+        (selectedCats.length === 0 || selectedCats.includes(t.category))
+      ).sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
+
+  const toggleCategory = (cat: string) => {
+    if (cat === 'Tất cả') {
+      setSelectedCats(selectedCats.length === availableCategories.length ? [] : [...availableCategories]);
+      return;
+    }
+    setSelectedCats(prev => 
+      prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]
+    );
+  };
 
   // Process data for charts
   const { dailyLabels, dailyValues, incomeValues, budgetValues, pieData } = useMemo(() => {
@@ -87,7 +115,10 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
 
     const dailyLabels = Array.from({ length: daysInMonth }, (_, i) => {
       const day = i + 1;
-      return day === 1 || day % 5 === 0 || day === daysInMonth ? day.toString() : '';
+      // Tránh chồng lấp nhãn 30 và 31 ở cuối tháng
+      if (day === daysInMonth) return day.toString();
+      if (day === 1 || (day % 5 === 0 && day < daysInMonth - 2)) return day.toString();
+      return '';
     });
 
     // Budget line: using total income or a standard reference
@@ -99,7 +130,7 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
       population: c.amount,
       color: colors[i % colors.length],
       legendFontColor: '#475569',
-      legendFontSize: 12,
+      legendFontSize: 9,
     }));
 
     return { dailyLabels, dailyValues, incomeValues, budgetValues, pieData };
@@ -163,27 +194,62 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
           </div>
 
           <div class="section-title">2. Phân bổ theo danh mục</div>
-          <div class="chart-container">
-            <canvas id="categoryChart"></canvas>
+          <div class="chart-container" style="text-align: center; height: auto; margin-bottom: 20px;">
+            <img src="${`https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify({
+              type: 'pie',
+              data: {
+                labels: reportData.categories.map(c => `${c.name} (${c.percent.toFixed(1)}%) - ${new Intl.NumberFormat('vi-VN').format(c.amount)}₫`),
+                datasets: [{
+                  data: reportData.categories.map(c => c.amount),
+                  backgroundColor: ['#07B8C8', '#0EA5E9', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#64748B']
+                }]
+              },
+              options: { 
+                plugins: { 
+                  legend: { 
+                    position: 'top',
+                    labels: { boxWidth: 12, font: { size: 11 } }
+                  },
+                  datalabels: { display: false }
+                } 
+              }
+            }))}&w=500&h=300`}" width="500" height="300" />
           </div>
 
-          <div class="section-title">3. Giao dịch tiêu biểu</div>
+          <div class="section-title">3. ${displayMode === 'top' ? 'Giao dịch tiêu biểu' : 'Chi tiết theo danh mục'}</div>
           <table>
-            <thead><tr><th>Ngày</th><th>Danh mục</th><th style="text-align:right">Số tiền</th></tr></thead>
+            <thead><tr><th>Ngày & Giờ</th><th>Danh mục / Mô tả</th><th style="text-align:right">Số tiền</th></tr></thead>
             <tbody>
-              ${reportData.topTxs.map(t => `
+              ${filteredTxs.slice(0, 50).map(t => `
                 <tr>
-                  <td>${new Date(t.occurred_at).getDate()}/${new Date(t.occurred_at).getMonth() + 1}</td>
-                  <td>${t.category}</td>
-                  <td style="text-align:right; color:#EF4444">-${new Intl.NumberFormat('vi-VN').format(Number(t.amount))}₫</td>
+                  <td style="vertical-align: top;">
+                    ${new Date(t.occurred_at).getDate()}/${new Date(t.occurred_at).getMonth() + 1}<br/>
+                    <span style="font-size:10px; color:#64748B">${new Date(t.occurred_at).getHours().toString().padStart(2,'0')}:${new Date(t.occurred_at).getMinutes().toString().padStart(2,'0')}</span>
+                  </td>
+                  <td style="vertical-align: top;">
+                    ${t.category}<br/>
+                    ${t.description ? `<span style="font-size:11px; color:#64748B">${t.description}</span>` : ''}
+                  </td>
+                  <td style="text-align:right; color:#EF4444; vertical-align: top;">-${new Intl.NumberFormat('vi-VN').format(Number(t.amount))}₫</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
 
           <div class="section-title">4. Xu hướng tài chính</div>
-          <div class="chart-container">
-            <canvas id="trendChart"></canvas>
+          <div class="chart-container" style="text-align: center;">
+            <img src="${`https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify({
+              type: 'line',
+              data: {
+                labels: Array.from({ length: dailyValues.length }, (_, i) => i + 1),
+                datasets: [
+                  { label: 'Thu nhập', data: incomeValues, borderColor: 'rgba(34, 197, 94, 0.6)', backgroundColor: 'transparent', borderWidth: 2, tension: 0.3, pointRadius: 0 },
+                  { label: 'Chi tiêu', data: dailyValues, borderColor: 'rgba(249, 115, 22, 0.6)', backgroundColor: 'rgba(249, 115, 22, 0.05)', fill: true, borderWidth: 2, tension: 0.3, pointRadius: 0 },
+                  { label: 'Ngân sách', data: budgetValues, borderColor: 'rgba(14, 165, 233, 0.5)', borderDash: [5, 5], borderWidth: 1, pointRadius: 0, fill: false }
+                ]
+              },
+              options: { scales: { y: { beginAtZero: true }, x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } } } }
+            }))}&w=500&h=300`}" width="500" height="300" />
           </div>
 
           <div class="section-title">Phân tích từ MoneeBot</div>
@@ -192,76 +258,6 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
             <p>• Bạn tiết kiệm được <b>${reportData.tIncome > 0 ? ((reportData.savings / reportData.tIncome) * 100).toFixed(1) : 0}%</b> thu nhập tháng này.</p>
             <p>• ${reportData.tExpense > reportData.tIncome ? '⚠️ <b>Cảnh báo:</b> Chi tiêu của bạn đang vượt quá thu nhập.' : '✅ <b>Tích cực:</b> Tình hình tài chính của bạn đang ổn định.'}</p>
           </div>
-
-          <script>
-            const catCtx = document.getElementById('categoryChart').getContext('2d');
-            new Chart(catCtx, {
-              type: 'pie',
-              data: {
-                labels: ${categoryLabels},
-                datasets: [{
-                  data: ${categoryValues},
-                  backgroundColor: ['#07B8C8', '#0EA5E9', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6']
-                }]
-              },
-              options: { 
-                responsive: true, 
-                maintainAspectRatio: false, 
-                plugins: { 
-                  legend: { 
-                    position: 'right',
-                    labels: { boxWidth: 12, font: { size: 10 } }
-                  } 
-                } 
-              }
-            });
-
-            const trendCtx = document.getElementById('trendChart').getContext('2d');
-            new Chart(trendCtx, {
-              type: 'line',
-              data: {
-                labels: ${dailyChartLabels},
-                datasets: [
-                  {
-                    label: 'Thu nhập',
-                    data: ${JSON.stringify(incomeValues)},
-                    borderColor: 'rgba(34, 197, 94, 0.6)',
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    tension: 0.3,
-                    pointRadius: 0
-                  },
-                  {
-                    label: 'Chi tiêu',
-                    data: ${JSON.stringify(dailyValues)},
-                    borderColor: 'rgba(249, 115, 22, 0.6)',
-                    backgroundColor: 'rgba(249, 115, 22, 0.05)',
-                    fill: true,
-                    borderWidth: 2,
-                    tension: 0.3,
-                    pointRadius: 0
-                  },
-                  {
-                    label: 'Ngân sách',
-                    data: ${JSON.stringify(budgetValues)},
-                    borderColor: 'rgba(14, 165, 233, 0.5)',
-                    borderDash: [5, 5],
-                    borderWidth: 1,
-                    pointRadius: 0,
-                    fill: false
-                  }
-                ]
-              },
-              options: { 
-                responsive: true, 
-                maintainAspectRatio: false, 
-                scales: { 
-                    y: { beginAtZero: true },
-                    x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } }
-                } 
-              }
-            });
-          </script>
         </body>
       </html>
     `;
@@ -273,6 +269,18 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
         const { uri } = await Print.printToFileAsync({ html });
         await Sharing.shareAsync(uri);
       }
+      
+      // Save export history
+      try {
+        await fetch(`${API_BASE_URL}/api/reports/history`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: userEmail, month: reportData.month, year: reportData.year })
+        });
+      } catch (err) {
+        console.error('Failed to save export history', err);
+      }
+      
     } catch (e) {
       Alert.alert('Lỗi', 'Không thể xuất PDF.');
     }
@@ -333,29 +341,82 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
             </View>
 
             <Text style={styles.sectionTitle}>2. Phân bổ danh mục</Text>
-            <PieChart
-              data={pieData}
-              width={screenWidth - 40}
-              height={300}
-              chartConfig={{ color: (opacity = 1) => `rgba(0, 0, 0, ${opacity})` }}
-              accessor="population"
-              backgroundColor="transparent"
-              paddingLeft="15"
-              absolute
-            />
-
-            <Text style={styles.sectionTitle}>3. Giao dịch tiêu biểu</Text>
-            <View style={styles.table}>
-              {reportData.topTxs.map((t, index) => {
-                const d = new Date(t.occurred_at);
-                return (
-                  <View key={index} style={[styles.tableRow, index === reportData.topTxs.length - 1 && { borderBottomWidth: 0 }]}>
-                    <Text style={styles.dateCell}>{String(d.getDate()).padStart(2, '0')}/{String(d.getMonth() + 1).padStart(2, '0')}</Text>
-                    <Text style={styles.catCell} numberOfLines={1}>{t.category}</Text>
-                    <Text style={styles.amountCell}>-{new Intl.NumberFormat('vi-VN').format(Number(t.amount))}₫</Text>
+            <View style={{ alignItems: 'center', marginBottom: 10 }}>
+              <PieChart
+                data={pieData}
+                width={screenWidth}
+                height={160}
+                chartConfig={{ color: () => 'rgba(255, 255, 255, 0)', labelColor: () => 'rgba(255, 255, 255, 0)' }}
+                accessor="population"
+                backgroundColor="transparent"
+                paddingLeft="0"
+                hasLegend={false}
+                center={[screenWidth / 4, 0]}
+              />
+            </View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 10, gap: 8, marginBottom: 20 }}>
+              {reportData.categories.map((c, i) => (
+                <View key={i} style={{ flexDirection: 'row', alignItems: 'center', width: '45%' }}>
+                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: ['#07B8C8', '#0EA5E9', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#64748B'][i % 8], marginRight: 6 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 11, color: '#475569', fontWeight: '500' }} numberOfLines={1}>{c.name} ({c.percent.toFixed(1)}%)</Text>
+                    <Text style={{ fontSize: 11, color: '#0F172A', fontWeight: '700' }}>{new Intl.NumberFormat('vi-VN').format(c.amount)}₫</Text>
                   </View>
-                );
-              })}
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>3. {displayMode === 'top' ? 'Giao dịch tiêu biểu' : 'Danh mục đã chọn'}</Text>
+              <View style={styles.modeToggle}>
+                <TouchableOpacity 
+                  onPress={() => setDisplayMode('top')} 
+                  style={[styles.modeBtn, displayMode === 'top' && styles.modeBtnActive]}
+                >
+                  <Text style={[styles.modeBtnText, displayMode === 'top' && styles.modeBtnTextActive]}>Tiêu biểu</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  onPress={() => {
+                    setDisplayMode('custom');
+                    setShowPicker(true);
+                  }} 
+                  style={[styles.modeBtn, displayMode === 'custom' && styles.modeBtnActive]}
+                >
+                  <Text style={[styles.modeBtnText, displayMode === 'custom' && styles.modeBtnTextActive]}>Tùy chọn</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {displayMode === 'custom' && (
+              <TouchableOpacity style={styles.filterChip} onPress={() => setShowPicker(true)}>
+                <Ionicons name="filter" size={14} color="#07B8C8" />
+                <Text style={styles.filterChipText}>
+                  {selectedCats.length === 0 ? 'Tất cả danh mục' : `Đang chọn ${selectedCats.length} mục`}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            <View style={styles.table}>
+              {filteredTxs.length > 0 ? (
+                filteredTxs.slice(0, displayMode === 'custom' ? 20 : 5).map((t, index) => {
+                  const d = new Date(t.occurred_at);
+                  return (
+                    <View key={index} style={[styles.tableRow, index === filteredTxs.length - 1 && { borderBottomWidth: 0 }, { paddingVertical: 12, alignItems: 'flex-start' }]}>
+                      <View style={{ width: 60 }}>
+                        <Text style={[styles.dateCell, { width: '100%', marginBottom: 2 }]}>{String(d.getDate()).padStart(2, '0')}/{String(d.getMonth() + 1).padStart(2, '0')}</Text>
+                        <Text style={{ fontSize: 10, color: '#94A3B8' }}>{String(d.getHours()).padStart(2, '0')}:{String(d.getMinutes()).padStart(2, '0')}</Text>
+                      </View>
+                      <View style={{ flex: 1, paddingHorizontal: 10 }}>
+                        <Text style={[styles.catCell, { width: '100%' }]} numberOfLines={1}>{t.category}</Text>
+                        {t.description ? <Text style={{ fontSize: 11, color: '#64748B', marginTop: 2 }} numberOfLines={1}>{t.description}</Text> : null}
+                      </View>
+                      <Text style={styles.amountCell}>-{new Intl.NumberFormat('vi-VN').format(Number(t.amount))}₫</Text>
+                    </View>
+                  );
+                })
+              ) : (
+                <View style={styles.emptyRow}><Text style={styles.emptyText}>Không có giao dịch nào</Text></View>
+              )}
             </View>
 
             <Text style={styles.sectionTitle}>4. Xu hướng tài chính</Text>
@@ -369,8 +430,8 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
                     { data: budgetValues, color: () => 'rgba(14, 165, 233, 0.6)', strokeWidth: 1, withDots: false },
                   ]
                 }}
-                width={(screenWidth * 3) / 5} 
-                height={275}
+                width={screenWidth - 50} 
+                height={220}
                 chartConfig={{
                   backgroundColor: '#ffffff',
                   backgroundGradientFrom: '#ffffff',
@@ -383,7 +444,7 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
                 }}
                 formatYLabel={formatYAxisLabel}
                 bezier
-                style={{ marginVertical: 10, borderRadius: 16, backgroundColor: '#ffffff' }}
+                style={{ marginVertical: 10, borderRadius: 16, backgroundColor: '#ffffff', marginLeft: -15 }}
                 withDots={false}
                 withShadow={false}
                 withHorizontalLines={true}
@@ -419,6 +480,52 @@ export function FinancialReportModal({ visible, onClose, reportData, userName }:
             </View>
           </View>
         </ScrollView>
+
+        <Modal visible={showPicker} transparent animationType="fade">
+          <View style={styles.pickerOverlay}>
+            <View style={styles.pickerContent}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>Chọn danh mục</Text>
+                <TouchableOpacity onPress={() => setShowPicker(false)}>
+                  <Ionicons name="close" size={24} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.pickerList}>
+                <TouchableOpacity 
+                  style={styles.pickerItem} 
+                  onPress={() => toggleCategory('Tất cả')}
+                >
+                  <Ionicons 
+                    name={selectedCats.length === availableCategories.length ? "checkbox" : "square-outline"} 
+                    size={20} 
+                    color="#07B8C8" 
+                  />
+                  <Text style={styles.pickerItemText}>Tất cả danh mục</Text>
+                </TouchableOpacity>
+                {availableCategories.map(cat => (
+                  <TouchableOpacity 
+                    key={cat} 
+                    style={styles.pickerItem} 
+                    onPress={() => toggleCategory(cat)}
+                  >
+                    <Ionicons 
+                      name={selectedCats.includes(cat) ? "checkbox" : "square-outline"} 
+                      size={20} 
+                      color="#07B8C8" 
+                    />
+                    <Text style={styles.pickerItemText}>{cat}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity 
+                style={styles.confirmBtn} 
+                onPress={() => setShowPicker(false)}
+              >
+                <Text style={styles.confirmBtnText}>Hoàn tất</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </Modal>
   );
@@ -461,4 +568,23 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendText: { fontSize: 12, color: '#475569', fontWeight: '600' },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, marginTop: 8 },
+  modeToggle: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 10, padding: 2 },
+  modeBtn: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 8 },
+  modeBtnActive: { backgroundColor: '#FFF', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  modeBtnText: { fontSize: 11, color: '#64748B', fontWeight: '600' },
+  modeBtnTextActive: { color: '#07B8C8' },
+  filterChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#ECFEFF', alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, gap: 4, marginBottom: 10 },
+  filterChipText: { fontSize: 11, color: '#0891B2', fontWeight: '600' },
+  pickerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 30 },
+  pickerContent: { backgroundColor: '#FFF', width: '100%', borderRadius: 20, padding: 20, maxHeight: '80%' },
+  pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  pickerTitle: { fontSize: 18, fontWeight: '700', color: '#0F172A' },
+  pickerList: { marginBottom: 20 },
+  pickerItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  pickerItemText: { fontSize: 14, color: '#334155' },
+  confirmBtn: { backgroundColor: '#07B8C8', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  confirmBtnText: { color: '#FFF', fontWeight: '700', fontSize: 15 },
+  emptyRow: { padding: 30, alignItems: 'center' },
+  emptyText: { color: '#94A3B8', fontSize: 13 },
 });
