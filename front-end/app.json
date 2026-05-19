@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "front-end",
+    "name": "Monee",
     "slug": "front-end",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -46,11 +46,19 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "4eb212f6-d579-4bfb-a3b1-26d2761d5727"
+      }
+    },
+    "owner": "tunghoang.05"
   }
 }
