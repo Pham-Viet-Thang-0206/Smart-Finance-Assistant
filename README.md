@@ -1,183 +1,289 @@
 # Smart Finance Assistant
 
-Ứng dụng quản lý tài chính cá nhân gồm:
+## Project name
 
-- `back-end`: Node.js + Express + MySQL
-- `front-end`: Expo / React Native
+Smart Finance Assistant
 
-## 1. Yêu cầu cài sẵn
+## Short description
 
-- Node.js `18+` và `npm`
-- MySQL `8+`
-- Expo Go trên điện thoại hoặc Android Studio emulator nếu muốn chạy mobile
-- Tùy chọn:
-  - Gemini API key để phân loại giao dịch bằng AI
-  - Google Cloud Speech credentials để nhận diện giọng nói
+A personal finance management application with an intelligent finance assistant. It includes a backend built with Node.js, Express, and MySQL, and a frontend built with Expo React Native.
 
-## 2. Cài dependencies
+## Member list
 
-Chạy lần lượt:
+```
+MEMBER LIST
+--------------------------------------------------
+Full Name            | Student ID  | Role
+Hoàng Tùng           | 2301140099  | Project Leader, Lead Mobile Developer, Back-end Developer & DevOps
+Phạm Viết Thắng      | 2301140091  | Front-end Developer, UI/UX Figma Designer
+Đoàn Anh Sơn         | 2301140088  | Database Architect
+```
 
-```powershell
+
+## Tech stack
+
+- Backend: Node.js 18+, Express, MySQL, dotenv, bcryptjs, cors, mysql2
+- Frontend: Expo, React Native, React Navigation, TypeScript, Expo Router
+- AI / media: Google Gemini (Generative Language API), Google Cloud Speech-to-Text, QR decoding libraries
+
+## Main features
+
+- User registration and login by email or phone number
+- Financial onboarding with income, savings goals, and expense allocation
+- Expense and income transaction management
+- Savings goal tracking, financial report generation, and report history
+- Intelligent finance chat assistant
+- Transaction entry via image, QR code, and voice input
+- Community features with posts, comments, and likes
+
+## Overall project structure
+
+```
+├── back-end/
+│   ├── package.json             # Node.js backend dependencies
+│   ├── package-lock.json        # npm lockfile
+│   ├── .env.example             # Environment variable template for backend
+│   ├── db/
+│   │   ├── mysql_schema.sql     # Core database schema for user, transactions, reports
+│   │   └── mysql_onboarding.sql # Onboarding-related schema
+│   ├── scripts/
+│   │   └── migrate.js           # Optional SQL migration/import helper script
+│   └── src/
+│       ├── index.js             # Express server and API route handlers
+│       └── speech.js            # Speech transcription helper
+├── front-end/
+│   ├── package.json             # Expo frontend dependencies
+│   ├── package-lock.json        # npm lockfile
+│   ├── .env.example             # Environment variable template for frontend
+│   ├── app/
+│   │   ├── _layout.tsx          # Application layout wrapper
+│   │   ├── home.tsx             # Main dashboard screen
+│   │   ├── modal.tsx            # Shared modal layout component
+│   │   ├── onboarding-summary.tsx # Onboarding summary screen
+│   │   ├── onboarding.tsx       # Onboarding flow screen
+│   │   ├── register.tsx         # Registration screen
+│   │   └── (tabs)/              # Tab navigation screens
+│   │       ├── _layout.tsx
+│   │       ├── explore.tsx
+│   │       └── index.tsx
+│   ├── components/
+│   │   ├── external-link.tsx
+│   │   ├── financial-report-modal.tsx
+│   │   ├── haptic-tab.tsx
+│   │   ├── hello-wave.tsx
+│   │   ├── parallax-scroll-view.tsx
+│   │   ├── themed-text.tsx
+│   │   ├── themed-view.tsx
+│   │   └── ui/
+│   │       ├── collapsible.tsx
+│   │       ├── icon-symbol.ios.tsx
+│   │       └── icon-symbol.tsx
+│   ├── constants/
+│   │   ├── api.ts
+│   │   └── theme.ts
+│   ├── hooks/
+│   │   ├── use-color-scheme.ts
+│   │   ├── use-color-scheme.web.ts
+│   │   └── use-theme-color.ts
+│   ├── scripts/
+│   │   ├── reset-project.js
+│   │   └── update-ngrok-env.js
+│   └── assets/
+│       └── images/              # Static image assets
+├── README.md                    # Project documentation
+```
+
+## Installation steps and required tools
+
+### Requirements
+
+- Node.js 18 or newer
+- npm
+- MySQL 8+
+- Optional: `ngrok` for mobile device access over LAN or public URL
+- Optional: Google Cloud Speech credentials for speech-to-text functionality
+
+### Install dependencies
+
+From `back-end`:
+
+```bash
 cd back-end
 npm ci
+```
 
-cd ..\front-end
+From `front-end`:
+
+```bash
+cd front-end
 npm ci
 ```
 
-## 3. Cấu hình MySQL cho back-end
+## Environment variable setup using .env.example
 
-### 3.1. Tạo database
+### Backend
 
-Back-end sẽ tự tạo bảng khi khởi động, nhưng bạn phải tạo database trước:
+From `back-end/`:
 
-```sql
-CREATE DATABASE monee_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```bash
+cp .env.example .env
 ```
 
-### 3.2. Tạo file môi trường
-
-Tại thư mục `back-end`, copy file mẫu:
+Or on Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Sau đó sửa các biến trong `.env`:
+Open `back-end/.env` and configure:
 
 ```env
 PORT=4000
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_USER=root
-DB_PASS=your_mysql_password
+DB_PASS=
 DB_NAME=monee_db
+DB_SSL=false
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
 GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\google-speech-key.json
 ```
 
-Ghi chú:
+- `GEMINI_API_KEY` is optional. Without it, some AI-powered features may not work.
+- `GOOGLE_APPLICATION_CREDENTIALS` is optional and required only for speech-to-text.
 
-- `DB_PASS` là bắt buộc nếu tài khoản MySQL của bạn có mật khẩu.
-- Nếu bỏ trống `GEMINI_API_KEY`, app vẫn chạy nhưng phần AI classification sẽ fallback về category mặc định.
-- Nếu không có `GOOGLE_APPLICATION_CREDENTIALS`, endpoint speech-to-text sẽ không dùng được.
+### Frontend
 
-## 4. Chạy back-end
+From `front-end/`:
 
-Trong thư mục `back-end`:
-
-```powershell
-npm run dev
+```bash
+cp .env.example .env
 ```
 
-Nếu cấu hình đúng, API sẽ chạy tại:
-
-```text
-http://localhost:4000
-```
-
-Kiểm tra nhanh:
-
-```text
-GET http://localhost:4000/health
-```
-
-Kỳ vọng nhận:
-
-```json
-{ "status": "ok" }
-```
-
-## 5. Cấu hình front-end
-
-Tại thư mục `front-end`, copy file mẫu nếu cần:
+Or on Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Nội dung mặc định:
+Open `front-end/.env` and configure:
 
 ```env
 EXPO_PUBLIC_API_BASE_URL=
 EXPO_PUBLIC_API_BASE_URL_WEB=http://localhost:4000
 ```
 
-Giải thích:
+- `EXPO_PUBLIC_API_BASE_URL_WEB` is used for local web testing.
+- `EXPO_PUBLIC_API_BASE_URL` should be set when using a real device or when backend is not on `localhost`.
 
-- `EXPO_PUBLIC_API_BASE_URL_WEB` dùng cho web local.
-- `EXPO_PUBLIC_API_BASE_URL` để trống thì app mobile sẽ tự suy ra host từ Expo dev server.
-- Nếu chạy trên điện thoại thật qua mạng LAN hoặc qua `ngrok`, bạn có thể set thủ công giá trị này.
+## How to run backend
 
-Ví dụ:
+In `back-end/`:
 
-```env
-EXPO_PUBLIC_API_BASE_URL=http://192.168.1.10:4000
+```bash
+npm run dev
 ```
 
-Hoặc:
+The backend should start at:
 
-```env
-EXPO_PUBLIC_API_BASE_URL=https://your-ngrok-url.ngrok-free.app
+```text
+http://localhost:4000
 ```
 
-Repo đã có script cập nhật nhanh `.env` từ tunnel `ngrok`:
+Verify with:
 
-```powershell
-npm run ngrok:env
+```bash
+curl http://localhost:4000/health
 ```
 
-Script này yêu cầu bạn đã chạy `ngrok http 4000` trước đó.
+Expected response:
 
-## 6. Chạy front-end
+```json
+{ "status": "ok" }
+```
 
-Trong thư mục `front-end`:
+## How to run frontend
 
-```powershell
+In `front-end/`:
+
+```bash
 npm start
 ```
 
-Hoặc:
+Or use:
 
-```powershell
+```bash
 npm run web
 npm run android
+npm run ios
 ```
 
-## 7. Thứ tự khởi chạy đúng
+Expo will open the developer tools and allow running on web, emulator, or a physical device.
 
-1. Khởi động MySQL.
-2. Tạo database `monee_db`.
-3. Cấu hình `back-end/.env`.
-4. Chạy `back-end` bằng `npm run dev`.
-5. Kiểm tra `http://localhost:4000/health`.
-6. Cấu hình `front-end/.env` nếu cần.
-7. Chạy `front-end` bằng `npm start` hoặc `npm run web`.
+## How to set up or migrate/seed the database
 
-## 8. Các lỗi thường gặp
+### Create the database
 
-### `Access denied for user ...`
+Before running the backend, create the MySQL database:
 
-Sai `DB_USER` hoặc `DB_PASS` trong `back-end/.env`.
+```sql
+CREATE DATABASE monee_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
 
-### `Unknown database 'monee_db'`
+### Automatic schema creation
 
-Bạn chưa tạo database trước khi chạy API.
+The backend includes logic to create the required tables on startup. After creating the database, start the backend and it will initialize the necessary schema.
 
-### Mobile không gọi được API
+### Optional migration script
 
-- Đảm bảo điện thoại và máy tính cùng mạng LAN.
-- Nếu vẫn lỗi, set thủ công `EXPO_PUBLIC_API_BASE_URL`.
-- Trường hợp mạng nội bộ bị chặn, dùng `ngrok`.
+The file `back-end/scripts/migrate.js` can run the SQL files in `back-end/db/` to create the tables.
+Note: the script checks `DB_HOST` and supports SSL when `DB_SSL=true`.
 
-### Speech-to-text lỗi
+## How to run the full system from a clean machine
 
-Bạn chưa cấu hình `GOOGLE_APPLICATION_CREDENTIALS` hoặc service account chưa có quyền Speech-to-Text.
+1. Clone the repository:
+    ```bash
+    git clone <repo-url>
+    cd Smart-Finance-Assistant
+    ```
+2. Install Node.js 18+ and npm.
+3. Install MySQL 8+ and start the MySQL service.
+4. Create the `monee_db` database.
+5. Install backend and frontend dependencies:
+    ```bash
+    cd back-end
+    npm ci
+    cd ../front-end
+    npm ci
+    ```
+6. Copy `.env.example` to `.env` in each folder and update environment variables.
+7. Run the backend:
+    ```bash
+    cd back-end
+    npm run dev
+    ```
+8. Run the frontend:
+    ```bash
+    cd ../front-end
+    npm start
+    ```
+9. Open the app in a browser or on a mobile device and register a new user.
 
-## 9. Ghi chú kỹ thuật hiện tại
+## Demo account
 
-- Back-end đang dùng `Gemini`, không phải OpenAI.
-- Back-end tự khởi tạo phần lớn bảng khi startup.
-- Có một màn hình front-end gọi endpoint `/api/user/update-info`, nhưng endpoint này hiện chưa có trong back-end. Việc này không chặn app khởi động, nhưng phần sửa thông tin tài khoản trong màn hình cài đặt có thể chưa hoạt động.
+- Email: tunghoang71005@gmail.com
+- Phone: 0901771005
+- Password: 11111111
+
+## Known issues
+
+- Localhost routing errors: Physical mobile devices cannot always connect directly to the local development server without a tunnel. Run `npm run ngrok:env` before starting the Expo bundler when testing on a real device.
+- Camera focus and QR scanning: Some emulator screens do not simulate camera focus fields reliably for high-density VietQR scans. Testing on a physical smartphone is recommended.
+- Layout and keyboard handling: Some Android screen sizes may experience visual overflow in forms if the wrapper view does not dynamically adjust the keyboard offset.
+
+## Notes
+
+- `back-end/.env.example` and `front-end/.env.example` are included in the source.
+- Do not include `node_modules/`, `.env`, or large build artifacts in the submitted zip.
+- Submit source code and `.env.example` files only to reproduce the project.
