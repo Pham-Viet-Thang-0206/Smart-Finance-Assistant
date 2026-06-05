@@ -19,7 +19,6 @@ Phạm Viết Thắng      | 2301140091  | Front-end Developer, UI/UX Figma Desi
 Đoàn Anh Sơn         | 2301140088  | Database Architect
 ```
 
-
 ## Tech stack
 
 - Backend: Node.js 18+, Express, MySQL, dotenv, bcryptjs, cors, mysql2
@@ -39,33 +38,43 @@ Phạm Viết Thắng      | 2301140091  | Front-end Developer, UI/UX Figma Desi
 ## Overall project structure
 
 ```
+Smart-Finance-Assistant/
+├── monneeeeeeeee.session.sql
+├── README.md
 ├── back-end/
-│   ├── package.json             # Node.js backend dependencies
-│   ├── package-lock.json        # npm lockfile
-│   ├── .env.example             # Environment variable template for backend
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── .env.example
 │   ├── db/
-│   │   ├── mysql_schema.sql     # Core database schema for user, transactions, reports
-│   │   └── mysql_onboarding.sql # Onboarding-related schema
+│   │   ├── mysql_onboarding.sql
+│   │   └── mysql_schema.sql
 │   ├── scripts/
-│   │   └── migrate.js           # Optional SQL migration/import helper script
+│   │   └── migrate.js
 │   └── src/
-│       ├── index.js             # Express server and API route handlers
-│       └── speech.js            # Speech transcription helper
+│       ├── db.js
+│       ├── index.js
+│       └── speech.js
 ├── front-end/
-│   ├── package.json             # Expo frontend dependencies
-│   ├── package-lock.json        # npm lockfile
-│   ├── .env.example             # Environment variable template for frontend
+│   ├── app.json
+│   ├── eas.json
+│   ├── eslint.config.js
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── tsconfig.json
+│   ├── .env.example
 │   ├── app/
-│   │   ├── _layout.tsx          # Application layout wrapper
-│   │   ├── home.tsx             # Main dashboard screen
-│   │   ├── modal.tsx            # Shared modal layout component
-│   │   ├── onboarding-summary.tsx # Onboarding summary screen
-│   │   ├── onboarding.tsx       # Onboarding flow screen
-│   │   ├── register.tsx         # Registration screen
-│   │   └── (tabs)/              # Tab navigation screens
+│   │   ├── _layout.tsx
+│   │   ├── home.tsx
+│   │   ├── modal.tsx
+│   │   ├── onboarding-summary.tsx
+│   │   ├── onboarding.tsx
+│   │   ├── register.tsx
+│   │   └── (tabs)/
 │   │       ├── _layout.tsx
 │   │       ├── explore.tsx
 │   │       └── index.tsx
+│   ├── assets/
+│   │   └── images/
 │   ├── components/
 │   │   ├── external-link.tsx
 │   │   ├── financial-report-modal.tsx
@@ -85,190 +94,98 @@ Phạm Viết Thắng      | 2301140091  | Front-end Developer, UI/UX Figma Desi
 │   │   ├── use-color-scheme.ts
 │   │   ├── use-color-scheme.web.ts
 │   │   └── use-theme-color.ts
-│   ├── scripts/
-│   │   ├── reset-project.js
-│   │   └── update-ngrok-env.js
-│   └── assets/
-│       └── images/              # Static image assets
-├── README.md                    # Project documentation
+│   └── scripts/
+│       ├── reset-project.js
+│       └── update-ngrok-env.js
 ```
 
-## Installation steps and required tools
+## Appendix — Setup & Run Guide
 
-### Requirements
 
-- Node.js 18 or newer
+### Step 1 — Required tools
+
+Install the following before proceeding:
+
+- Node.js (v18+)
 - npm
-- MySQL 8+
-- Optional: `ngrok` for mobile device access over LAN or public URL
-- Optional: Google Cloud Speech credentials for speech-to-text functionality
+- MySQL Server (8+)
+- Expo CLI / Expo Go (for mobile testing)
+- Ngrok (optional but recommended for testing on physical devices)
+- Google Gemini API key (optional; required for AI features)
 
-### Install dependencies
+### Step 2 — Database & environment
 
-From `back-end`:
+1. Create the database (example name: `smart_finance_db`):
+
+```sql
+CREATE DATABASE smart_finance_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+2. Copy the backend environment template and edit values:
+
+```bash
+cp back-end/.env.example back-end/.env
+# then edit back-end/.env and set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, GEMINI_API_KEY, JWT_SECRET
+```
+
+Example `back-end/.env` entries:
+
+```env
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=your_mysql_password
+DB_NAME=smart_finance_db
+JWT_SECRET=your_super_secret_jwt_key_change_this
+PORT=4000
+GEMINI_API_KEY=your_google_gemini_api_key_here
+```
+
+### Step 3 — Install & start backend
 
 ```bash
 cd back-end
 npm ci
+npm run dev
 ```
 
-From `front-end`:
+The backend will attempt to create required tables on first start by running the included SQL schema files. API will be available at `http://localhost:4000`.
+
+### Step 4 — (Optional) Tunnel backend with ngrok for mobile testing
+
+```bash
+ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
+ngrok http 4000
+```
+
+Keep ngrok running; copy the public URL for the frontend environment.
+
+### Step 5 — Prepare & run frontend
 
 ```bash
 cd front-end
 npm ci
+# if using ngrok, update frontend env automatically
+npm run ngrok:env
+# start Expo in tunnel mode (recommended for physical devices)
+npx expo start --tunnel
 ```
 
-## Environment variable setup using .env.example
-
-### Backend
-
-From `back-end/`:
+If tunnel mode fails, use LAN mode:
 
 ```bash
-cp .env.example .env
+npx expo start --lan
 ```
 
-Or on Windows PowerShell:
+### Step 6 — Open the app
 
-```powershell
-Copy-Item .env.example .env
-```
+Open Expo Go on your device and scan the QR code shown by Expo, or open the web URL in your browser for the web build.
 
-Open `back-end/.env` and configure:
+---
 
-```env
-PORT=4000
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_USER=root
-DB_PASS=
-DB_NAME=monee_db
-DB_SSL=false
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
-GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\google-speech-key.json
-```
+### Notes on database migration & seeding
 
-- `GEMINI_API_KEY` is optional. Without it, some AI-powered features may not work.
-- `GOOGLE_APPLICATION_CREDENTIALS` is optional and required only for speech-to-text.
-
-### Frontend
-
-From `front-end/`:
-
-```bash
-cp .env.example .env
-```
-
-Or on Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Open `front-end/.env` and configure:
-
-```env
-EXPO_PUBLIC_API_BASE_URL=
-EXPO_PUBLIC_API_BASE_URL_WEB=http://localhost:4000
-```
-
-- `EXPO_PUBLIC_API_BASE_URL_WEB` is used for local web testing.
-- `EXPO_PUBLIC_API_BASE_URL` should be set when using a real device or when backend is not on `localhost`.
-
-## How to run backend
-
-In `back-end/`:
-
-```bash
-npm run dev
-```
-
-The backend should start at:
-
-```text
-http://localhost:4000
-```
-
-Verify with:
-
-```bash
-curl http://localhost:4000/health
-```
-
-Expected response:
-
-```json
-{ "status": "ok" }
-```
-
-## How to run frontend
-
-In `front-end/`:
-
-```bash
-npm start
-```
-
-Or use:
-
-```bash
-npm run web
-npm run android
-npm run ios
-```
-
-Expo will open the developer tools and allow running on web, emulator, or a physical device.
-
-## How to set up or migrate/seed the database
-
-### Create the database
-
-Before running the backend, create the MySQL database:
-
-```sql
-CREATE DATABASE monee_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-
-### Automatic schema creation
-
-The backend includes logic to create the required tables on startup. After creating the database, start the backend and it will initialize the necessary schema.
-
-### Optional migration script
-
-The file `back-end/scripts/migrate.js` can run the SQL files in `back-end/db/` to create the tables.
-Note: the script checks `DB_HOST` and supports SSL when `DB_SSL=true`.
-
-## How to run the full system from a clean machine
-
-1. Clone the repository:
-    ```bash
-    git clone <repo-url>
-    cd Smart-Finance-Assistant
-    ```
-2. Install Node.js 18+ and npm.
-3. Install MySQL 8+ and start the MySQL service.
-4. Create the `monee_db` database.
-5. Install backend and frontend dependencies:
-    ```bash
-    cd back-end
-    npm ci
-    cd ../front-end
-    npm ci
-    ```
-6. Copy `.env.example` to `.env` in each folder and update environment variables.
-7. Run the backend:
-    ```bash
-    cd back-end
-    npm run dev
-    ```
-8. Run the frontend:
-    ```bash
-    cd ../front-end
-    npm start
-    ```
-9. Open the app in a browser or on a mobile device and register a new user.
+- The `back-end/scripts/migrate.js` script can run SQL files in `back-end/db/` to import schemas and onboarding data. Use it when deploying to managed databases.
+- Ensure `DB_HOST` and `DB_SSL` values are set appropriately for remote DBs.
 
 ## Demo account
 
@@ -286,4 +203,4 @@ Note: the script checks `DB_HOST` and supports SSL when `DB_SSL=true`.
 
 - `back-end/.env.example` and `front-end/.env.example` are included in the source.
 - Do not include `node_modules/`, `.env`, or large build artifacts in the submitted zip.
-- Submit source code and `.env.example` files only to reproduce the project.
+  Submit source code and `.env.example` files only to reproduce the project.
