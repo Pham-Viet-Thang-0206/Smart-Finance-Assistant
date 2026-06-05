@@ -41,6 +41,10 @@ Phạm Viết Thắng      | 2301140091  | Front-end Developer, UI/UX Figma Desi
 Smart-Finance-Assistant/
 ├── monneeeeeeeee.session.sql
 ├── README.md
+├── .env.example
+├── database/
+│   ├── mysql_onboarding.sql
+│   └── mysql_schema.sql
 ├── back-end/
 │   ├── package.json
 │   ├── package-lock.json
@@ -101,7 +105,6 @@ Smart-Finance-Assistant/
 
 ## Appendix — Setup & Run Guide
 
-
 ### Step 1 — Required tools
 
 Install the following before proceeding:
@@ -125,7 +128,7 @@ CREATE DATABASE smart_finance_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_c
 
 ```bash
 cp back-end/.env.example back-end/.env
-# then edit back-end/.env and set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, GEMINI_API_KEY, JWT_SECRET
+# then edit back-end/.env and set DB_HOST, DB_USER, DB_PASS, DB_NAME, GEMINI_API_KEY, JWT_SECRET
 ```
 
 Example `back-end/.env` entries:
@@ -133,7 +136,7 @@ Example `back-end/.env` entries:
 ```env
 DB_HOST=localhost
 DB_USER=root
-DB_PASSWORD=your_mysql_password
+DB_PASS=your_mysql_password
 DB_NAME=smart_finance_db
 JWT_SECRET=your_super_secret_jwt_key_change_this
 PORT=4000
@@ -180,11 +183,24 @@ npx expo start --lan
 
 Open Expo Go on your device and scan the QR code shown by Expo, or open the web URL in your browser for the web build.
 
+### Step 7 — Build APK with EAS Build
+
+To build an Android APK, ensure you have an Expo account and run the following commands:
+
+```bash
+cd front-end
+npm install -g eas-cli
+eas login
+eas build -p android --profile preview
+```
+
+Note: Make sure your `eas.json` is configured with a build profile that produces an APK (e.g., `buildType: "apk"` inside the preview profile).
+
 ---
 
 ### Notes on database migration & seeding
 
-- The `back-end/scripts/migrate.js` script can run SQL files in `back-end/db/` to import schemas and onboarding data. Use it when deploying to managed databases.
+- The `back-end/scripts/migrate.js` script can run SQL files in `database/` to import schemas and onboarding data. Use it when deploying to managed databases.
 - Ensure `DB_HOST` and `DB_SSL` values are set appropriately for remote DBs.
 
 ## Demo account
